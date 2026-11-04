@@ -8,6 +8,7 @@ export const G = {
   selected: null, hover: null, build: null, buildPos: null, buildValid: false, linkFrom: null,
   mouseWorld: null, fx: [], hurtAt: 0, over: false,
   ping: 0, solo: false, incidents: new Map(),
+  kp: 0, learned: new Set(), trace: null, traceShown: 0, traceAt: 0,
   me() { return this.ents.get(this.meId) || null; },
 };
 

@@ -1,6 +1,6 @@
 // Incident Director: lên lịch sự cố, áp hiệu ứng lên mô phỏng, đo tác động và sinh post-mortem
 // dựa trên kiến trúc THẬT của người chơi tại thời điểm sự cố.
-import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H } from './data.js';
+import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H, KP_PERFECT_BONUS } from './data.js';
 import { clamp, dist, weightedPick, round1 } from './util.js';
 import { spawnMob } from './mobs.js';
 import { BASE_TX, BASE_TY } from './worldgen.js';
@@ -490,7 +490,12 @@ export class Director {
       impact: { peakErr: Math.round(A.peakErr * 100), peakP99: Math.round(A.peakP99), badSec: Math.round(A.badSec), minSat: Math.round(A.minSat), users: Math.round(w.users - A.usersStart), lost: inc.lost || 0 },
       checks, lesson: def.lesson, concepts: def.concepts, codex: ['inc-' + inc.id, ...def.concepts],
     };
+    const okN = checks.filter((c) => c.ok).length;
+    let kp = okN + (okN === checks.length && checks.length ? KP_PERFECT_BONUS : 0);
+    if (inc.drill) { kp = w.drillSeen.has(inc.id) ? 0 : Math.ceil(kp / 2); w.drillSeen.add(inc.id); } // game day chỉ thưởng lần đầu mỗi loại
+    pm.kp = kp;
     for (const c of pm.codex) w.unlock(c);
+    w.addKp(kp, 'pm');
     w.log.push(pm);
     if (w.log.length > 40) w.log.shift();
     w.emit({ t: 'postmortem', pm });

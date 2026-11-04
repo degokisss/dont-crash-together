@@ -88,6 +88,7 @@ function onMsg(m) {
       for (const e of m.ents) addEnt(e, true);
       G.tmBase = m.tm; G.tmAt = now;
       G.codex = new Set(m.codex); G.newCodex = new Set();
+      G.kp = m.kp || 0; G.learned = new Set(m.learned || []); G.trace = null;
       G.log = m.log || []; G.history = m.history || [];
       G.users = m.users; G.over = m.over; G.sys = m.sys || null; G.selected = null; G.mode = 'none';
       G.cam = null;
@@ -128,6 +129,8 @@ function onEvent(ev) {
     case 'fx': SFX.fx(ev.kind); G.fx.push({ kind: ev.kind, x: ev.x, y: ev.y, t0: performance.now() / 1000 }); break;
     case 'chat': HUD.chat(ev); break;
     case 'codex': if (!G.codex.has(ev.id)) { G.codex.add(ev.id); if (entryTitle(ev.id)) { G.newCodex.add(ev.id); HUD.codexNew(ev.id); SFX.toast('codex'); } } break;
+    case 'kp': G.kp = ev.kp; G.learned = new Set(ev.learned); HUD.kpChanged(ev); break;
+    case 'trace': G.trace = ev; G.traceShown = 0; G.traceAt = performance.now(); break;
     case 'dayreport': HUD.dayReport(ev); break;
     case 'incident': HUD.incident(ev); if (ev.phase === 'start') SFX.incident(); break;
     case 'postmortem': G.log.push(ev.pm); HUD.postmortem(ev.pm); break;

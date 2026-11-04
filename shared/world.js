@@ -3,7 +3,7 @@
 import {
   TILE, MAP_W, MAP_H, DT, FLOW_DT, INV_SLOTS, REACH, BUILD_RANGE, STATION_R, HANDS_ON_R, PWR_R,
   ITEMS, STRUCTS, COMP, RECIPES, COOK, RESOURCES, MOBS, PLAYER, MAX_SHARDS, DAY_LEN,
-  clockAt, SEASON_VI, canLink, ROLES,
+  clockAt, SEASON_VI, canLink, ROLES, CLS, KP_START, KP_PER_CODEX,
 } from './data.js';
 import { mulberry32, clamp, dist, round1 } from './util.js';
 import { genTiles, genResources, B, BASE_TX, BASE_TY } from './worldgen.js';
@@ -11,6 +11,10 @@ import { Flow } from './flow.js';
 import { Director } from './incidents.js';
 import { stepMobs, spawnMob } from './mobs.js';
 import { stepTips } from './tips.js';
+import { CODEX_COMPONENTS } from './codex_components.js';
+import { CODEX_INCIDENTS } from './codex_incidents.js';
+
+const CODEX_IDS = new Set([...CODEX_COMPONENTS, ...CODEX_INCIDENTS].map((e) => e.id));
 
 const COMPLEX = { gateway: 1, cdn: 2, lb: 2, app: 2, cache: 3, queue: 3, db: 3, replica: 2.5, generator: 1, lantern: 1, turret: 1.5 };
 const TEAM_CAP = 24; // độ phức tạp mà 1 kỹ sư xử lý thoải mái
@@ -32,6 +36,9 @@ export class World {
     this.stash = {}; // token -> dữ liệu người chơi offline
     this.events = [];
     this.codex = new Set();
+    this.kp = KP_START;
+    this.learned = new Set();
+    this.drillSeen = new Set();
     this.tipsSeen = new Set();
     this.lights = [];
     this.monitors = [];
@@ -51,7 +58,7 @@ export class World {
     this.flow = new Flow(this);
     this.director = new Director(this);
     if (save) this.load(save);
-    else this.generate();
+    else { this.generate(); this.kp = KP_START; this.events = []; }
   }
 
   // ---------------- sinh thế giới ----------------
@@ -199,7 +206,39 @@ export class World {
     if (this.codex.has(id)) return false;
     this.codex.add(id);
     this.events.push({ t: 'codex', id });
+    if (CODEX_IDS.has(id)) this.addKp(KP_PER_CODEX, 'codex');
     return true;
+  }
+
+  addKp(n, why) {
+    if (n <= 0) return;
+    this.kp += n;
+    this.emit({ t: 'kp', kp: this.kp, learned: [...this.learned], gain: n, why });
+  }
+
+  c_learn(p, m) {
+    const r = RECIPES.find((x) => x.id === m.id);
+    if (!r || !r.kp || this.learned.has(r.id)) return;
+    if (this.kp < r.kp) return this.say(`Cần ${r.kp} Điểm kiến thức (đang có ${this.kp}).`, 'warn', p.pid);
+    this.kp -= r.kp;
+    this.learned.add(r.id);
+    this.emit({ t: 'kp', kp: this.kp, learned: [...this.learned], gain: 0 });
+    this.say(`Đã học công thức: ${r.name}.`, 'good');
+  }
+
+  // Theo dõi một request đi qua hệ thống (chỉ thấy số liệu ở node nằm trong vùng giám sát)
+  c_trace(p, m) {
+    const k = CLS.indexOf(m.cls);
+    if (k < 0 || k > 2) return;
+    if (this.time - (p._trAt ?? -9) < 0.4) return;
+    p._trAt = this.time;
+    if (!this.flow.ctx || !this.flow.ctx.size) return;
+    const rng = mulberry32((this.tick * 7919 + p.pid * 104729) >>> 0);
+    const one = this.flow.traceRequest(k, rng);
+    const gw = [...this.structs].find((s) => s.k === 'gateway');
+    const agg = gw && this.isMonitored(gw.x, gw.y) ? this.flow.traceStats(k, rng, 60) : null;
+    this.emit({ t: 'trace', to: p.pid, ...one, agg });
+    this.unlock('concept-tail-latency');
   }
 
   // ---------------- người chơi ----------------
@@ -439,6 +478,7 @@ export class World {
   c_craft(p, m) {
     const r = RECIPES.find((x) => x.id === m.id);
     if (!r || !r.out) return;
+    if (r.kp && !this.learned.has(r.id)) return this.say('Chưa học công thức này — dùng Điểm kiến thức trong bảng Xây (C).', 'warn', p.pid);
     if (!this.hasStation(p, r.station)) return this.say('Cần đứng gần bàn chế tạo phù hợp.', 'warn', p.pid);
     if (!this.canAfford(p.inv, r.ing)) return this.say('Thiếu nguyên liệu.', 'warn', p.pid);
     const sim = p.inv.map((x) => (x ? { ...x } : null));
@@ -459,6 +499,7 @@ export class World {
   c_place(p, m) {
     const r = RECIPES.find((x) => x.id === m.id);
     if (!r || !r.place) return;
+    if (r.kp && !this.learned.has(r.id)) return this.say('Chưa học công thức này — dùng Điểm kiến thức trong bảng Xây (C).', 'warn', p.pid);
     if (!this.hasStation(p, r.station)) return this.say('Cần đứng gần bàn chế tạo phù hợp.', 'warn', p.pid);
     if (!this.canAfford(p.inv, r.ing)) return this.say('Thiếu nguyên liệu.', 'warn', p.pid);
     const tx = m.tx | 0, ty = m.ty | 0;
@@ -475,7 +516,7 @@ export class World {
     e._by = p.name;
     this.fx('boom', e.x, e.y);
     this.unlock('comp-' + r.place);
-    if (r.place === 'archlab') this.say('Phòng lab kiến trúc mở khoá Cache, Queue, CDN, Replica và Tháp tường lửa.', 'good');
+    if (r.place === 'archlab') this.say('Phòng lab kiến trúc cho phép chế Cache, Queue, CDN, Replica, Tháp tường lửa — nhưng bạn phải học từng công thức bằng Điểm kiến thức (bảng Xây, phím C).', 'good');
     if (r.place === 'chaoslab') this.say('Chaos Lab: kích hoạt sự cố có kiểm soát ("game day") để luyện tập.', 'good');
     this.flow.dirty = true;
   }
@@ -743,6 +784,8 @@ export class World {
       case 'cfg': { const e = this.ents.get(m.id); if (e) Object.assign(e.cfg, m.cfg); break; }
       case 'unlockall': for (const k of m.ids) this.unlock(k); break;
       case 'sanity': p.sanity = m.v; break;
+      case 'learnall': for (const r of RECIPES) if (r.kp) this.learned.add(r.id); this.emit({ t: 'kp', kp: this.kp, learned: [...this.learned], gain: 0 }); break;
+      case 'kp': this.addKp(m.n || 10, 'debug'); break;
     }
   }
 
@@ -1090,7 +1133,7 @@ export class World {
     }
     return JSON.stringify({
       v: 1, seed: this.seed, time: this.time, tick: this.tick, nextId: this.nextId, users: this.users, sat: this.sat,
-      codex: [...this.codex], tipsSeen: [...this.tipsSeen], stash, growthBoostAt: this.growthBoostAt, peak: this.peakUsers,
+      kp: this.kp, learned: [...this.learned], codex: [...this.codex], tipsSeen: [...this.tipsSeen], stash, growthBoostAt: this.growthBoostAt, peak: this.peakUsers,
       dayStat: this.dayStat, log: this.log.slice(-30), history: this.history.slice(-120), won: this.won,
       director: this.director.toSave(), flow: this.flow.toSave(),
       ents: ents.filter((e) => e.k !== 'player').map((e) => JSON.parse(JSON.stringify(e, keep))),
@@ -1100,7 +1143,9 @@ export class World {
   load(raw) {
     const s = typeof raw === 'string' ? JSON.parse(raw) : raw;
     this.time = s.time; this.tick = s.tick; this.nextId = s.nextId; this.users = s.users; this.sat = s.sat ?? 100;
-    this.codex = new Set(s.codex); this.tipsSeen = new Set(s.tipsSeen); this.stash = s.stash || {};
+    this.codex = new Set(s.codex);
+    if (s.kp === undefined) { this.learned = new Set(RECIPES.filter((r) => r.kp).map((r) => r.id)); this.kp = 0; } // bản lưu cũ: giữ mọi công thức đã mở
+    else { this.kp = s.kp; this.learned = new Set(s.learned); } this.tipsSeen = new Set(s.tipsSeen); this.stash = s.stash || {};
     this.growthBoostAt = s.growthBoostAt ?? -999; this.peakUsers = s.peak || s.users; this.dayStat = s.dayStat;
     this.log = s.log || []; this.history = s.history || []; this.won = !!s.won;
     this.clock = clockAt(this.time);

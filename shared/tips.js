@@ -4,7 +4,7 @@ import { COMP, STRUCTS, ITEMS } from './data.js';
 const TIPS = [
   {
     id: 'start', when: (w) => w.time > 4,
-    msg: 'Bạn là kỹ sư on-call. Mục tiêu: giữ SLO (≥98.5% thành công, p99 ≤ 1.5s) để người dùng tăng. Chế tạo Tua vít điện & Máy khoan wafer (bấm C), đừng để máy phát hết điện. Bấm M mở sơ đồ hệ thống.',
+    msg: 'Bạn là kỹ sư on-call. Mục tiêu: giữ SLO (≥98.5% thành công, p99 ≤ 1.5s) để người dùng tăng. Chế tạo Tua vít điện & Máy khoan wafer (bấm C), đừng để máy phát hết điện. Bấm M mở sơ đồ hệ thống (có công cụ theo dõi một request). Công thức nâng cao phải học bằng Điểm kiến thức (KP) kiếm từ sổ tay và post-mortem.',
     codex: ['concept-slo'],
   },
   {
@@ -79,7 +79,7 @@ const TIPS = [
   },
   {
     id: 'archlab', when: (w) => w.codex.size > 0 && [...w.players.values()].some((p) => w.invCount(p.inv, 'fiber') >= 1 && w.invCount(p.inv, 'copper') >= 4) && ![...w.structs].some((s) => s.k === 'archlab'),
-    msg: 'Bạn có đủ nguyên liệu cho Phòng lab kiến trúc — mở khoá Cache, Queue, CDN, Replica và Tháp tường lửa.',
+    msg: 'Bạn có đủ nguyên liệu cho Phòng lab kiến trúc — cho phép chế Cache, Queue, CDN, Replica và Tháp tường lửa (cần học công thức bằng KP).',
     codex: [],
   },
   {

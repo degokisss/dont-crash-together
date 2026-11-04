@@ -108,7 +108,7 @@ export const HUD = {
     }
     const fuelPct = gens ? Math.round((fuel / gens) * 100) : 0;
     const cx = G.sys ? G.sys.cx : 0;
-    const key = `${clock.day}|${clock.season}|${clock.phase}|${Math.round(pct)}|${fuelPct}|${cx}|${gens}`;
+    const key = `${clock.day}|${clock.season}|${clock.phase}|${Math.round(pct)}|${fuelPct}|${cx}|${gens}|${G.kp}`;
     if (key === HUD._clockKey) return;
     HUD._clockKey = key;
     const phaseVi = { day: 'Ban ngày — traffic bình thường', dusk: 'Hoàng hôn — giờ cao điểm, sắp tối', night: 'Ban đêm — Gremlin ra ngoài' }[clock.phase];
@@ -116,7 +116,7 @@ export const HUD = {
       <div class="ck-top">${iconImg(icon, 30)}<div><b>Ngày ${clock.day}</b> · ${SEASON_VI[clock.season]}<small>${SEASON_THEME[clock.season]}</small></div></div>
       <div class="daybar"><i style="width:${pct}%"></i><s style="left:${(80 / DAY_LEN) * 100}%"></s><s style="left:${(115 / DAY_LEN) * 100}%"></s></div>
       <div class="ck-sub"><span>${phaseVi}</span></div>
-      <div class="ck-meta"><span class="${fuelPct < 30 ? 'bad' : ''}" title="Nhiên liệu trung bình của các máy phát điện">${iconImg('fire', 16)} ${fuelPct}%</span><span title="Độ phức tạp của hệ thống (ảnh hưởng tỉnh táo)">${iconImg('brain', 16)} ${cx}</span></div>`;
+      <div class="ck-meta"><span class="${fuelPct < 30 ? 'bad' : ''}" title="Nhiên liệu trung bình của các máy phát điện">${iconImg('fire', 16)} ${fuelPct}%</span><span title="Độ phức tạp của hệ thống (ảnh hưởng tỉnh táo)">${iconImg('brain', 16)} ${cx}</span><span class="kpm" title="Điểm kiến thức: kiếm từ sổ tay và post-mortem, dùng để học công thức nâng cao (phím C)">${iconImg('book', 16)} ${G.kp} KP</span></div>`;
   },
 
   userCard() {
@@ -240,9 +240,10 @@ export const HUD = {
     const rows = RECIPES.filter((r) => r.cat === craftCat).map((r) => {
       const key = r.place || r.out.item;
       const ing = Object.entries(r.ing).map(([k, n]) => `<span class="ing" data-i="${k}" data-n="${n}">${iconImg(k, 18)}<b>${n}</b></span>`).join('');
-      return `<div class="rec" data-id="${r.id}"><div class="rc-ic">${iconImg(key, 40)}</div><div class="rc-b"><div class="rc-n">${r.name}<span class="stn" data-s="${r.station}">${r.station ? STATION_NAME[r.station] : ''}</span></div><div class="ings">${ing}</div></div></div>`;
+      const un = r.kp && !G.learned.has(r.id);
+      return `<div class="rec ${un ? 'unlearned' : ''}" data-id="${r.id}"><div class="rc-ic">${iconImg(key, 40)}</div><div class="rc-b"><div class="rc-n">${r.name}${un ? `<span class="kpb">Học: ${r.kp} KP</span>` : ''}<span class="stn" data-s="${r.station}">${r.station ? STATION_NAME[r.station] : ''}</span></div><div class="ings">${ing}</div></div></div>`;
     }).join('');
-    el.craft.innerHTML = `<div class="ph"><b>Chế tạo & xây dựng</b><button data-x>×</button></div><div class="tabs">${tabs}</div><div class="rlist">${rows}</div><div class="rfoot">Đứng gần <b>Bảng trắng</b> / <b>Phòng lab</b> để mở công thức. Giữ Shift để đặt liên tiếp.</div>`;
+    el.craft.innerHTML = `<div class="ph"><b>Chế tạo & xây dựng</b><span class="kphead" title="Điểm kiến thức">${G.kp} KP</span><button data-x>×</button></div><div class="tabs">${tabs}</div><div class="rlist">${rows}</div><div class="rfoot">Đứng gần <b>Bảng trắng</b> / <b>Phòng lab</b> để mở công thức. Giữ Shift để đặt liên tiếp.</div>`;
     el.craft.onclick = (ev) => {
       if (ev.target.closest('[data-x]')) return HUD.toggleCraft();
       const t = ev.target.closest('.tab');
@@ -250,6 +251,11 @@ export const HUD = {
       const r = ev.target.closest('.rec');
       if (!r) return;
       const rec = RECIPES.find((x) => x.id === r.dataset.id);
+      if (r.classList.contains('unlearned')) {
+        if (G.kp >= rec.kp) cmd('learn', { id: rec.id });
+        else HUD.toast(`Cần ${rec.kp} Điểm kiến thức (bạn có ${G.kp}). Kiếm thêm từ post-mortem và sổ tay.`, 'warn');
+        return;
+      }
       if (r.classList.contains('locked')) return HUD.toast(r.classList.contains('nostation') ? `Cần đứng gần ${STATION_NAME[rec.station]}.` : 'Thiếu nguyên liệu.', 'warn');
       if (rec.place) { enterBuild(rec); el.craft.hidden = true; craftOpen = false; }
       else cmd('craft', { id: rec.id });
@@ -277,7 +283,7 @@ export const HUD = {
       let ok = true;
       $$('.ing', r).forEach((g) => { const e = (have[g.dataset.i] || 0) >= +g.dataset.n; g.classList.toggle('miss', !e); if (!e) ok = false; });
       r.classList.toggle('nostation', !stn);
-      r.classList.toggle('locked', !stn || !ok);
+      r.classList.toggle('locked', !r.classList.contains('unlearned') && (!stn || !ok));
       const s = r.querySelector('.stn');
       if (s) s.classList.toggle('ok', stn);
     });
@@ -379,6 +385,7 @@ export const HUD = {
       <h3>Kiến trúc của bạn lúc đó (${good}/${pm.checks.length} đạt)</h3>
       <ul class="checks">${pm.checks.map((c) => `<li class="${c.ok ? 'ok' : 'no'}"><i>${c.ok ? '✓' : '✗'}</i><div><b>${esc(c.t)}</b><p>${esc(c.d)}</p></div></li>`).join('')}</ul>
       <div class="lesson"><b>Bài học:</b> ${esc(pm.lesson)}</div>
+      ${pm.kp ? `<div class="kpgain">+${pm.kp} Điểm kiến thức${pm.drill ? ' (game day: chỉ thưởng lần đầu mỗi loại)' : ''}</div>` : ''}
       <div class="chips">${pm.codex.map((c) => entryTitle(c) ? `<button class="chip" data-codex="${c}">${esc(entryTitle(c))}</button>` : '').join('')}</div>
       <div class="row"><button class="btn" data-close>Đóng</button></div></div>`;
   },
@@ -398,6 +405,12 @@ export const HUD = {
     el.modal.innerHTML = `<div class="modal small win"><h2>Bạn đã sống sót một năm!</h2>
       <p>Bốn mùa trôi qua, hệ thống vẫn đứng vững với <b>${ev.users}</b> người dùng. Game tiếp tục chế độ vô tận — tải sẽ còn tăng.</p>
       <div class="row"><button class="btn primary" data-close>Tiếp tục</button></div></div>`;
+  },
+
+  kpChanged(ev) {
+    HUD._clockKey = '';
+    if (el.craft) { HUD.buildCraft(); if (craftOpen) HUD.updateCraft(); }
+    if (ev.gain && ev.why === 'pm') HUD.toast(`+${ev.gain} Điểm kiến thức từ post-mortem`, 'codex');
   },
 
   closeModal() { el.modal.hidden = true; el.modal.innerHTML = ''; },
@@ -428,12 +441,14 @@ export const HUD = {
       ['Chế tạo Tua vít điện và Máy khoan wafer (phím C) rồi thu thập tài nguyên', () => has('axe') && has('pickaxe')],
       ['Nạp nhiên liệu cho máy phát điện (nhấp vào máy phát)', () => (G._maxFuel || 0) > 175],
       ['Dựng App thứ hai + Load Balancer, nối Gateway → LB → các App', () => apps.length >= 2 && lbs.some((l) => l.links.length >= 2) && gw && lbs.some((l) => gw.links.includes(l.id))],
-      ['Dựng Phòng lab kiến trúc (mở khoá Cache, Queue, CDN, Replica)', () => of('archlab').length > 0],
+      ['Dựng Phòng lab kiến trúc (để chế Cache, Queue, CDN, Replica)', () => of('archlab').length > 0],
+      ['Học công thức đầu tiên bằng Điểm kiến thức (bảng Xây, phím C)', () => G.learned.size > 0],
       ['Thêm Cache giữa App và Database', () => of('cache').some((c) => apps.some((a) => a.links.includes(c.id)))],
       ['Phủ Đèn giám sát lên mọi component (hết dấu "?")', () => comps.length > 0 && G.sys && comps.every((c) => G.sys.n[c.id])],
       ['Sống sót qua sự cố đầu tiên và đọc post-mortem', () => G.log.length >= 1],
       ['Thêm Read Replica và bật Failover cho DB', () => of('replica').length > 0 && of('db').some((d) => d.cfg.failover !== 'off')],
       ['Đạt 100 người dùng', () => G.users >= 100],
+      ['Mở Sơ đồ (M) và theo dõi một request đi qua hệ thống', () => !!G.trace],
       ['Sống sót một năm (16 ngày)', () => clock.day > 16],
     ];
     const done = GOALS.filter(([, f]) => f()).length;

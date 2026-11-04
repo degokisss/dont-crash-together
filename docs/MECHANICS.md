@@ -74,6 +74,14 @@ Khi leader chết: ghi chưa được sao chép (async) bị **mất**. Sync rep
 | `outage` | Mất điện lưới | Một máy phát bị sập 30 s | Hai máy phát chồng lấn, phân tán component |
 | `analytics` | Truy vấn báo cáo nặng | Tải DB tăng đột biến (trên replica nếu có) | Cô lập workload bằng read replica |
 
+## Điểm kiến thức (KP)
+Công thức nâng cao (Cache, Queue, CDN, Replica, Tháp tường lửa, Module WAF, Chaos Lab, Module Autoscaler) phải được **học** bằng KP trước khi chế/đặt (vẫn cần đứng gần Phòng lab). KP dùng chung cả đội.
+- Khởi đầu 3 KP. +1 mỗi mục sổ tay mới mở khoá. Sau mỗi post-mortem: +1 cho mỗi biện pháp phòng thủ đạt, +2 nếu đạt đủ. Game day chỉ thưởng (một nửa) lần đầu mỗi loại sự cố.
+- Chi phí: Cache/Queue 2, CDN/Replica/Tháp/WAF 3, Chaos Lab/Autoscaler 4. Bản lưu cũ giữ nguyên các công thức đã có.
+
+## Theo dõi một request
+Trong Sơ đồ (M) bấm Tĩnh/Đọc/Ghi để gửi một request mẫu: server lấy mẫu một đường đi theo đúng xác suất của mô phỏng hiện tại (chia tải, cache hit/miss, drop do quá tải, retry, breaker, cáp đứt, rate limit...) và hiện từng bước với thời gian cộng dồn. Kèm mẫu 60 request (tỉ lệ thành công, p50/p99, lỗi hay gặp nhất) và gợi ý sổ tay. Node ngoài vùng Đèn giám sát chỉ hiện "???".
+
 ## Post-mortem
 Khi sự cố kết thúc, game sinh báo cáo: tác động (thời gian, % lỗi tối đa, p99 tối đa, người dùng ảnh hưởng), danh sách kiểm tra *"bạn có X không?"* (✓/✗ kèm lý do thật từ trạng thái hệ thống lúc đó) và gợi ý Codex.
 

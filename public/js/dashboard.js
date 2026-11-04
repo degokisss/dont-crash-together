@@ -1,5 +1,5 @@
 // Sơ đồ hệ thống sống + biểu đồ + nhật ký post-mortem (phím M / Tab).
-import { G, $, $$, esc, hooks } from './state.js';
+import { G, $, $$, esc, hooks, cmd } from './state.js';
 import { iconURL } from './art.js';
 import { COMP, STRUCTS, SLO } from '/shared/data.js';
 import { Inspector } from './inspector.js';
@@ -15,6 +15,10 @@ export const Dashboard = {
     hooks.closeDash = () => { if (!open) return false; Dashboard.toggle(); return true; };
     root.onclick = (ev) => {
       if (ev.target.closest('[data-close]')) return Dashboard.toggle();
+      const tr = ev.target.closest('[data-tr]');
+      if (tr) { G.lastTraceCls = tr.dataset.tr; return cmd('trace', { cls: tr.dataset.tr }); }
+      const cx = ev.target.closest('[data-codex]');
+      if (cx) return hooks.openCodex(cx.dataset.codex);
       const n = ev.target.closest('.dnode');
       if (n) return Inspector.open(+n.dataset.id);
       const pm = ev.target.closest('[data-pm]');
@@ -43,11 +47,15 @@ export const Dashboard = {
             <div class="chart"><h4>Thành công % <small>(SLO ${SLO.success * 100}%)</small></h4><canvas id="c2" width="330" height="100"></canvas></div>
             <div class="chart"><h4>p99 latency ms <small>(SLO ${SLO.p99})</small></h4><canvas id="c3" width="330" height="100"></canvas></div>
           </div>
+          <h4>Theo dõi một request</h4>
+          <div class="tracebar"><button data-tr="s">Tĩnh</button><button data-tr="r">Đọc</button><button data-tr="w">Ghi</button><small>Gửi một request mẫu và xem nó đi đâu, mất bao lâu, chết ở đâu.</small></div>
+          <div id="trace" class="trace"></div>
           <h4>Nhật ký sự cố &amp; post-mortem</h4>
           <div id="dlog" class="dlog"></div>
         </div>
       </div></div>`;
     nodes.clear();
+    lastRender = '';
     const wrap = $('#diagram', root);
     const avail = root.querySelector('.dbody').clientWidth - 350;
     const s = Math.max(0.5, Math.min(1, avail / W));
@@ -60,6 +68,7 @@ export const Dashboard = {
   frame() {
     if (!open) return;
     const tk = G.sys ? G.sys.tk : -1;
+    traceFrame();
     if (tk !== lastTk || G.history.length !== lastHist || G.log.length !== lastLog) { lastTk = tk; lastHist = G.history.length; lastLog = G.log.length; Dashboard.update(false); }
   },
 
@@ -68,6 +77,7 @@ export const Dashboard = {
     const s = JSON.stringify(comps.map((c) => [c.id, c.links]));
     if (s !== sig || force) { sig = s; layout(comps); }
     paint(comps);
+    renderTrace();
     summary();
     charts();
     log();
@@ -164,6 +174,7 @@ function paint(comps) {
     p.classList.toggle('flow', !isCut && r > 0);
   });
   $$('text[data-t]', svg).forEach((tx) => { const r = sys && sys.e[tx.dataset.t]; tx.textContent = r ? r + '/s' : cut.has(tx.dataset.t) ? 'ĐỨT' : ''; });
+  markTrace();
 }
 
 function summary() {
@@ -213,4 +224,51 @@ function log() {
   const items = G.log.slice().reverse();
   el.innerHTML = (inc.length ? inc.map((i) => `<div class="li live"><b>● Đang diễn ra:</b> ${esc(i.name)}${i.drill ? ' (game day)' : ''}</div>`).join('') : '') +
     (items.length ? items.map((p) => `<button class="li" data-pm="${p.uid}"><span>Ngày ${p.day}</span><b>${esc(p.name)}${p.drill ? ' · game day' : ''}</b><em>${p.checks.filter((c) => c.ok).length}/${p.checks.length} ✓ · lỗi ${p.impact.peakErr}%</em></button>`).join('') : '<p class="help">Chưa có sự cố nào kết thúc. Sau mỗi sự cố, game phân tích kiến trúc thật của bạn.</p>');
+}
+
+// ---------------------------------------------------------------- theo dõi request
+const CLS_NAME = { s: 'tĩnh', r: 'đọc', w: 'ghi' };
+const ST_LABEL = { ok: '', hit: 'HIT', drop: 'LỖI', dead: 'CHẾT', retry: 'RETRY', cut: 'ĐỨT' };
+let lastRender = '';
+
+function traceFrame() {
+  const t = G.trace;
+  if (!t || G.traceShown > t.steps.length) return;
+  if (performance.now() - G.traceAt > 420) { G.traceAt = performance.now(); G.traceShown++; renderTrace(); markTrace(); }
+}
+
+function markTrace() {
+  const t = G.trace;
+  const shown = t ? t.steps.slice(0, G.traceShown) : [];
+  const last = shown[shown.length - 1];
+  for (const [id, n] of nodes) {
+    if (!n.el) continue;
+    const steps = shown.filter((s) => s.id === id);
+    n.el.classList.toggle('traced', steps.length > 0);
+    n.el.classList.toggle('tfail', steps.some((s) => ['drop', 'dead', 'cut'].includes(s.st)));
+    n.el.classList.toggle('tcur', !!last && last.id === id);
+  }
+}
+
+function renderTrace() {
+  const el = $('#trace', root);
+  if (!el) return;
+  const t = G.trace;
+  if (!t) { if (lastRender !== 'none') { lastRender = 'none'; el.innerHTML = '<p class="help">Chọn loại request ở trên. Ngoài vùng Đèn giám sát, bước đi chỉ hiện "???".</p>'; } markTrace(); return; }
+  const done = G.traceShown >= t.steps.length;
+  const shown = t.steps.slice(0, G.traceShown);
+  const key = t.steps.length + '|' + shown.length + '|' + t.ms + '|' + t.outcome;
+  if (key === lastRender) return;
+  lastRender = key;
+  const head = done
+    ? `<div class="tr-head ${t.outcome}">Request ${CLS_NAME[t.cls]}: ${t.outcome === 'ok' ? 'THÀNH CÔNG' : t.outcome === 'timeout' ? 'QUÁ 3 s — client bỏ cuộc' : 'THẤT BẠI'}${t.steps.every((s) => s.t === null) ? '' : ` · ${t.ms} ms`}</div>`
+    : `<div class="tr-head run">Request ${CLS_NAME[t.cls]} đang đi…</div>`;
+  const rows = shown.map((s) => `<li class="${s.st}"><span class="tn">${SHORT[s.k]} #${s.id}</span><b>${s.t === null ? '???' : s.t + ' ms'}</b>${ST_LABEL[s.st] ? `<i>${ST_LABEL[s.st]}</i>` : ''}<em>${s.note === null ? '(ngoài vùng giám sát)' : esc(s.note)}${s.u !== null && s.u > 80 ? ` · util ${s.u}%` : ''}</em></li>`).join('');
+  let tail = '';
+  if (done) {
+    if (t.agg) tail += `<div class="tr-agg">Mẫu ${t.agg.n} request: <b>${Math.round((t.agg.ok / t.agg.n) * 100)}%</b> thành công · p50 <b>${t.agg.p50}</b> ms · p99 <b>${t.agg.p99}</b> ms${t.agg.top ? ` · lỗi hay gặp nhất: <b>${SHORT[t.agg.top.node] || t.agg.top.node}</b> (${t.agg.top.why})` : ''}</div>`;
+    else tail += '<div class="tr-agg">Thống kê nhiều request bị che: Gateway ngoài vùng giám sát.</div>';
+    if (t.hint) tail += `<div class="tr-hint">${esc(t.hint.text)} <button class="chip" data-codex="${t.hint.codex}">Sổ tay</button></div>`;
+  }
+  el.innerHTML = head + `<ol class="tr-steps">${rows}</ol>` + tail;
 }

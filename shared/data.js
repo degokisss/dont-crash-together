@@ -166,14 +166,14 @@ export const RECIPES = [
   { id: 'lb', cat: 'infra', name: 'Load Balancer', station: 1, ing: { wood: 3, silicon: 2, copper: 3, cable: 4 }, place: 'lb' },
   { id: 'db', cat: 'infra', name: 'Database', station: 1, ing: { wood: 4, silicon: 4, copper: 4, scrap: 3 }, place: 'db' },
   { id: 'archlab', cat: 'infra', name: 'Phòng lab kiến trúc', station: 1, ing: { wood: 6, silicon: 4, copper: 4, fiber: 1 }, place: 'archlab' },
-  { id: 'cache', cat: 'adv', name: 'Cache (Redis)', station: 2, ing: { silicon: 3, copper: 4, scrap: 2 }, place: 'cache' },
-  { id: 'queue', cat: 'adv', name: 'Message Queue', station: 2, ing: { wood: 3, silicon: 3, copper: 3, scrap: 2 }, place: 'queue' },
-  { id: 'cdn', cat: 'adv', name: 'CDN', station: 2, ing: { silicon: 3, copper: 4, fiber: 2 }, place: 'cdn' },
-  { id: 'replica', cat: 'adv', name: 'Read Replica', station: 2, ing: { wood: 4, silicon: 4, copper: 4, scrap: 3, fiber: 1 }, place: 'replica' },
-  { id: 'turret', cat: 'adv', name: 'Tháp tường lửa', station: 2, ing: { silicon: 4, copper: 4, scrap: 3, coal: 1 }, place: 'turret' },
-  { id: 'waf_module', cat: 'adv', name: 'Module WAF', station: 2, ing: { fiber: 2, silicon: 3, scrap: 2 }, out: { item: 'waf_module', n: 1 } },
-  { id: 'chaoslab', cat: 'adv', name: 'Chaos Lab', station: 2, ing: { wood: 6, silicon: 6, copper: 6, fiber: 3, coal: 2 }, place: 'chaoslab' },
-  { id: 'asg_module', cat: 'adv', name: 'Module Autoscaler', station: 3, ing: { fiber: 3, copper: 6, silicon: 6, scrap: 4 }, out: { item: 'asg_module', n: 1 } },
+  { id: 'cache', cat: 'adv', name: 'Cache (Redis)', station: 2, kp: 2, ing: { silicon: 3, copper: 4, scrap: 2 }, place: 'cache' },
+  { id: 'queue', cat: 'adv', name: 'Message Queue', station: 2, kp: 2, ing: { wood: 3, silicon: 3, copper: 3, scrap: 2 }, place: 'queue' },
+  { id: 'cdn', cat: 'adv', name: 'CDN', station: 2, kp: 3, ing: { silicon: 3, copper: 4, fiber: 2 }, place: 'cdn' },
+  { id: 'replica', cat: 'adv', name: 'Read Replica', station: 2, kp: 3, ing: { wood: 4, silicon: 4, copper: 4, scrap: 3, fiber: 1 }, place: 'replica' },
+  { id: 'turret', cat: 'adv', name: 'Tháp tường lửa', station: 2, kp: 3, ing: { silicon: 4, copper: 4, scrap: 3, coal: 1 }, place: 'turret' },
+  { id: 'waf_module', cat: 'adv', name: 'Module WAF', station: 2, kp: 3, ing: { fiber: 2, silicon: 3, scrap: 2 }, out: { item: 'waf_module', n: 1 } },
+  { id: 'chaoslab', cat: 'adv', name: 'Chaos Lab', station: 2, kp: 4, ing: { wood: 6, silicon: 6, copper: 6, fiber: 3, coal: 2 }, place: 'chaoslab' },
+  { id: 'asg_module', cat: 'adv', name: 'Module Autoscaler', station: 3, kp: 4, ing: { fiber: 3, copper: 6, silicon: 6, scrap: 4 }, out: { item: 'asg_module', n: 1 } },
 ];
 export const RECIPE_CATS = [
   { id: 'tool', name: 'Dụng cụ' },
@@ -258,3 +258,9 @@ export const ROLES = {
     desc: 'Đồ ăn thức uống hiệu quả hơn 50%, đói chậm hơn 20%.',
     perks: ['Đồ ăn +50% hiệu quả', 'Đói chậm hơn 20%'] },
 };
+
+// ---------- Điểm kiến thức (KP) ----------
+// Học = cách tiến bộ: công thức nâng cao phải được "học" bằng KP (kiếm từ sổ tay và post-mortem).
+export const KP_START = 3;
+export const KP_PER_CODEX = 1;
+export const KP_PERFECT_BONUS = 2;

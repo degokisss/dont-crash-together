@@ -44,7 +44,7 @@ export class Room {
     const w = this.world;
     const ents = [...this.sent.values()];
     client.send(`{"t":"welcome","pid":${info.pid},"token":${JSON.stringify(info.token)},"seed":${w.seed},"room":${JSON.stringify(this.name)},"tm":${w.time},` +
-      `"codex":${JSON.stringify([...w.codex])},"log":${JSON.stringify(w.log)},"history":${JSON.stringify(w.history)},"users":${w.users},` +
+      `"kp":${w.kp},"learned":${JSON.stringify([...w.learned])},"codex":${JSON.stringify([...w.codex])},"log":${JSON.stringify(w.log)},"history":${JSON.stringify(w.history)},"users":${w.users},` +
       `"over":${w.over},"sys":${JSON.stringify(w.flow.view)},"ents":[${ents.join(',')}]}`);
   }
 

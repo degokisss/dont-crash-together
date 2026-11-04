@@ -24,7 +24,7 @@ npm start            # http://localhost:3000   (đổi cổng: node server/index
 | 1–9, 0, -, = | Dùng đồ (ăn, trang bị, nạp); chuột phải vào ô để vứt |
 | C | Chế tạo & xây (đứng gần Bảng trắng / Phòng lab để mở công thức) |
 | M hoặc Tab | Sơ đồ hệ thống sống: node, luồng traffic, biểu đồ, nhật ký post-mortem |
-| K | Sổ tay Field Guide (mở khoá khi gặp / xây) |
+| K | Sổ tay Field Guide (mở khoá khi gặp / xây; mỗi mục mới +1 Điểm kiến thức) |
 | Enter | Chat · Esc: hủy / menu · X: dừng hành động · N: bật/tắt âm thanh |
 
 ## Học được gì
@@ -67,3 +67,7 @@ node tools/incident-test.js          # dựng kiến trúc đầy đủ, kích h
 node tools/db-test.js                # failover / split-brain / quorum / sync
 DCT_DEBUG=1 npm start                # bật lệnh debug (give/kit/build/inc...) để thử nhanh
 ```
+
+## Tiến trình bằng học tập & công cụ trace
+- **Điểm kiến thức (KP):** công thức nâng cao phải học bằng KP (kiếm từ sổ tay và post-mortem) — xem `docs/MECHANICS.md`.
+- **Theo dõi request:** trong Sơ đồ (M), gửi một request tĩnh/đọc/ghi và xem nó đi qua từng node, mất bao lâu, chết ở đâu. `node tools/trace-test.js` kiểm thử headless.

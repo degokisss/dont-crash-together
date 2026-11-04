@@ -639,6 +639,110 @@ export class Flow {
     w.director.observe(this, success, p99, offered);
   }
 
+  // ---------- theo dõi MỘT request ----------
+  // Lấy mẫu một request đi theo đúng phân phối của mô phỏng hiện tại (chia tải, cache hit, drop, retry, cáp đứt...).
+  // Node ngoài vùng giám sát chỉ hiện "???" (không có số liệu).
+  traceRequest(k, rng) {
+    const w = this.w;
+    const steps = [];
+    let ms = 0, why = null, whyNode = null;
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const push = (c, st, note, extra = {}) => {
+      const vis = w.isMonitored(c.n.x, c.n.y);
+      steps.push({ id: c.n.id, k: c.n.k, st, t: vis ? Math.round(ms) : null, u: vis ? Math.round(c.util * 100) : null, note: vis ? note : null, ...extra });
+    };
+    const fail = (c, code, st, note) => { push(c, st, note); if (!why) { why = code; whyNode = c.n.k; } return false; };
+
+    const walk = (c, depth) => {
+      const n = c.n;
+      if (depth > 12) return fail(c, 'noroute', 'drop', 'vòng lặp cáp');
+      if (!c.up) return fail(c, 'dead', 'dead', n.rb ? 'đang khởi động lại' : n.crashed ? 'đã crash' : 'mất điện');
+      if (rng() > (c.pass[k] ?? 1)) return fail(c, 'rl', 'drop', 'bị rate limit — từ chối sớm (429)');
+      // chọn nhánh theo xác suất của mô phỏng
+      const routes = c.routes.filter((r) => r.frac[k] > 0 && this.ctx.has(r.id));
+      const term = c.term[k] || 0;
+      let roll = rng(), choice = null, kind = 'none';
+      if (roll < term) kind = 'term';
+      else {
+        roll -= term;
+        for (const r of routes) { if (roll < r.frac[k]) { choice = r; kind = 'route'; break; } roll -= r.frac[k]; }
+      }
+      const own = kind === 'term' || (choice && !choice.pre);
+      if (own) {
+        ms += c.lat * (0.6 + 0.8 * rng());
+        if (rng() > c.okSelf) {
+          if (n.k === 'app' && n.bad && c.util <= 1) return fail(c, 'bad', 'drop', 'bản deploy lỗi trả 500');
+          return fail(c, 'overload', 'drop', c.util > 1 ? `quá tải (${Math.round(c.util * 100)}%) — hàng đợi đầy, trả 503` : 'lỗi/timeout cục bộ');
+        }
+      }
+      if (kind === 'term') {
+        const note = { cdn: 'HIT ở edge — không cần về origin', cache: 'HIT — trả ngay từ RAM', app: 'xử lý logic', db: k === 2 ? 'ghi vào primary' : 'đọc từ primary', replica: 'đọc từ replica', queue: `nhận ghi vào hàng đợi (ack sớm), backlog ${Math.round((this.st(n).q) || 0)}`, gateway: 'xử lý' }[n.k] || 'xử lý';
+        push(c, n.k === 'cache' || n.k === 'cdn' ? 'hit' : 'ok', note);
+        return true;
+      }
+      if (kind === 'none') {
+        // phần xác suất còn lại: không có đường đi
+        if (n.k === 'app' && n.cfg.breaker && n._st && n._st.brState !== 'closed') return fail(c, 'breaker', 'drop', 'circuit breaker MỞ — fail fast, không gọi downstream');
+        if (n.k === 'db') { const why2 = this.st(n).why; return fail(c, why2 === 'disk full' ? 'disk' : why2 === 'leader down' ? 'dead' : why2 ? 'cap' : 'noroute', 'drop', why2 ? `ghi bị chặn: ${why2}` : 'không có đường đi'); }
+        const linked = (n.links || []).map((id) => this.ctx.get(id)).filter(Boolean);
+        if (linked.length && linked.every((l) => !l.up)) return fail(c, 'dead', 'drop', 'mọi đích phía sau đều đã chết');
+        return fail(c, 'noroute', 'drop', routes.length || c.term.some((x) => x > 0) ? 'không có đích còn sống' : 'chưa nối cáp tới đích');
+      }
+      const child = this.ctx.get(choice.id);
+      const note = { cdn: 'MISS — về origin', cache: 'MISS — xuống DB', lb: `chia tải → ${child.n.k} #${child.n.id}`, gateway: child.n.k === 'cdn' ? 'tĩnh → CDN' : `chuyển tiếp → ${child.n.k} #${child.n.id}`, app: choice.frac[2] > 0 ? 'gọi nơi lưu dữ liệu để ghi' : 'gọi nơi lưu dữ liệu để đọc', queue: 'xả vào DB', db: 'đọc từ replica' }[n.k] || 'chuyển tiếp';
+      push(c, 'ok', note);
+      if (this.cut(n, child.n)) return fail(child, 'cut', 'cut', 'cáp bị đứt (network partition)');
+      const attempts = 1 + Math.min(3, Math.floor((choice.retry || 0) + rng()));
+      for (let a = 0; a < attempts; a++) {
+        if (a > 0) {
+          if (n.cfg && n.cfg.backoff) ms += 100 * 2 ** a * (0.5 + rng());
+          push(c, 'retry', `thử lại lần ${a}${n.cfg && n.cfg.backoff ? ' (backoff+jitter)' : ' (ngay lập tức)'}`);
+          why = null;
+        }
+        if (walk(child, depth + 1)) return true;
+      }
+      return false;
+    };
+
+    const gws = [...this.ctx.values()].filter((c) => c.n.k === 'gateway' && c.up);
+    let ok = false;
+    if (!gws.length) {
+      const g = [...this.ctx.values()].find((c) => c.n.k === 'gateway');
+      if (g) fail(g, 'dead', 'dead', 'Gateway không chạy'); 
+    } else ok = walk(gws[Math.floor(rng() * gws.length)], 0);
+    let outcome = ok ? 'ok' : 'fail';
+    if (ok && ms > 3000) { outcome = 'timeout'; why = 'timeout'; }
+    const HINTS = {
+      dead: ['Node chết giữa đường: không có dự phòng thì request mất. Thêm bản dự phòng (N+1) và health check.', 'concept-spof'],
+      overload: ['Node quá tải: hàng đợi đầy nên trả 503. Scale-out, cache hoặc rate limit.', 'concept-utilization'],
+      bad: ['Bản deploy lỗi: canary + giám sát + rollback nhanh giới hạn blast radius.', 'concept-blast-radius'],
+      cut: ['Cáp đứt: cần đường dự phòng; với DB, chọn sync/quorum theo CAP.', 'concept-cap'],
+      rl: ['Rate limit từ chối sớm để bảo vệ backend (load shedding).', 'concept-load-shedding'],
+      breaker: ['Circuit breaker mở: fail fast để downstream kịp hồi phục.', 'concept-circuit-breaker'],
+      timeout: ['Request chậm quá 3 s nên client bỏ cuộc: hãy theo dõi p99, không chỉ trung bình.', 'concept-tail-latency'],
+      disk: ['Đĩa DB đầy nên ghi thất bại: retention/archive và cảnh báo dung lượng.', 'comp-db'],
+      cap: ['DB từ chối ghi để giữ nhất quán (sync/quorum): đó là lựa chọn CP của CAP.', 'concept-cap'],
+      noroute: ['Request không có đường đi: kiểm tra cáp của component này.', 'comp-lb'],
+    };
+    const h = why && HINTS[why];
+    return { cls: CLS[k], outcome, ms: Math.round(ms), steps, why, whyNode, hint: h ? { text: h[0], codex: h[1] } : null };
+  }
+
+  // Lấy mẫu nhiều request để thấy phân phối (p50/p99, lý do lỗi hay gặp nhất)
+  traceStats(k, rng, n) {
+    const times = [], reasons = {};
+    let okN = 0;
+    for (let i = 0; i < n; i++) {
+      const r = this.traceRequest(k, rng);
+      times.push(r.ms);
+      if (r.outcome === 'ok') okN++;
+      else { const key = `${r.whyNode || '?'}:${r.why || '?'}`; reasons[key] = (reasons[key] || 0) + 1; }
+    }
+    times.sort((a, b) => a - b);
+    const top = Object.entries(reasons).sort((a, b) => b[1] - a[1])[0];
+    return { n, ok: okN, p50: times[Math.floor(n * 0.5)], p99: times[Math.min(n - 1, Math.floor(n * 0.99))], top: top ? { node: top[0].split(':')[0], why: top[0].split(':')[1], n: top[1] } : null };
+  }
+
   // Dữ liệu post-mortem: lấy chỉ số node thật
   nodeStats() {
     const out = {};
