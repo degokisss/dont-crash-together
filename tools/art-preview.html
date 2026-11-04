@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>art.js preview</title>
+<style>
+  body { background:#1b1a17; color:#d8cfb8; font:12px/1.3 ui-monospace,Menlo,monospace; margin:12px; }
+  h2 { margin:18px 0 6px; font-size:13px; color:#e8a23a; border-bottom:1px solid #3a352c; }
+  .grid { display:flex; flex-wrap:wrap; gap:6px; }
+  figure { margin:0; text-align:center; }
+  figcaption { font-size:10px; max-width:150px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#a89f88; }
+  canvas { background:#34382c; border-radius:4px; display:block; }
+  .icons img { background:#34382c; border-radius:4px; margin:2px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { drawEntity, zOf, iconURL, drawUser, drawGhost, drawFxSpark } from '/public/js/art.js';
+import { ITEMS, STRUCTS, RESOURCES, MOBS } from '/shared/data.js';
+
+const Z = +(new URLSearchParams(location.search).get('z') || 1.5);
+const root = document.getElementById('root');
+const cells = [];
+let uid = 1;
+
+function section(title) { const h = document.createElement('h2'); h.textContent = title; root.appendChild(h); const g = document.createElement('div'); g.className = 'grid'; root.appendChild(g); return g; }
+function cell(g, label, w, h, fn) {
+  const f = document.createElement('figure'), c = document.createElement('canvas');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = w * Z * dpr; c.height = h * Z * dpr; c.style.width = w * Z + 'px'; c.style.height = h * Z + 'px';
+  const cap = document.createElement('figcaption'); cap.textContent = label; cap.style.maxWidth = w * Z + 'px';
+  f.append(c, cap); g.appendChild(f);
+  const ctx = c.getContext('2d');
+  cells.push(() => {
+    ctx.setTransform(dpr * Z, 0, 0, dpr * Z, 0, 0); ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; for (let x = 0; x < w; x += 48) ctx.fillRect(x, 0, 1, h); for (let y = 0; y < h; y += 48) ctx.fillRect(0, y, w, 1);
+    fn(ctx, w, h);
+  });
+}
+// entity cell: draws at centre of a (w tiles x h tiles) area with margin
+function ent(g, label, props, o = {}, tw = 1, th = 1, pad = 20) {
+  const W = tw * 48 + pad * 2, H = th * 48 + pad * 2 + 18;
+  const e = { id: uid++, ...props };
+  cell(g, label, W, H, (ctx, w, h) => { e.rx = w / 2; e.ry = h / 2 + 8; drawEntity(ctx, e, { t: performance.now() / 1000, info: null, selected: false, me: false, dark: 0, ...o }); });
+}
+
+// ---- icons
+let g = section('ICONS: ITEMS (40px + 24px)');
+const ic = document.createElement('div'); ic.className = 'icons'; g.appendChild(ic);
+for (const k of Object.keys(ITEMS)) { for (const s of [40, 24]) { const i = new Image(); i.src = iconURL(k, s); i.title = k; ic.appendChild(i); } }
+g = section('ICONS: STRUCTS / RESOURCES / HUD / TOOLS (40px + 24px)');
+const ic2 = document.createElement('div'); ic2.className = 'icons'; g.appendChild(ic2);
+for (const k of [...Object.keys(STRUCTS), ...Object.keys(RESOURCES), 'heart','cup','brain','sun','moon','dusk','users','bolt','fire','hammer','wrench','book','chart','cable']) { for (const s of [40, 24]) { const i = new Image(); i.src = iconURL(k, s); i.title = k; ic2.appendChild(i); } }
+
+// ---- structures
+const BASE = { tier: 1, hp: 100, mhp: 100, on: true };
+const base = (k, extra = {}) => ({ k, w: STRUCTS[k].w, h: STRUCTS[k].h, ...BASE, mhp: STRUCTS[k].hp, hp: STRUCTS[k].hp, ...extra });
+const EX = {
+  app: [['virt:2', { virt: 2 }], ['bad', { bad: true }]],
+  lb: [['lc+asg', { algo: 'lc', asg: true }], ['hash', { algo: 'hash' }]],
+  db: [['shards4 leader disk.9', { shards: 4, leader: true, disk: 0.9 }], ['shards2', { shards: 2, disk: 0.3 }]],
+  replica: [['leader', { leader: true }]],
+  gateway: [['waf', { waf: true }]],
+  generator: [['fuel full', { fuel: 100, mf: 100 }], ['fuel 40%', { fuel: 40, mf: 100 }], ['fuel 0', { fuel: 0, mf: 100 }]],
+  turret: [['fire', { fire: true }]],
+  stove: [['cooking', { cooking: 'coffee' }], ['done', { done: true, cooking: 'stew' }]],
+};
+for (const k of Object.keys(STRUCTS)) {
+  const s = STRUCTS[k];
+  g = section('STRUCT ' + k + ' — ' + s.name);
+  const v = [['normal', {}]];
+  if (s.comp || k === 'lantern' || k === 'turret') v.push(['off', { on: false }], ['crashed', { crashed: true }], ['rebooting', { rb: true }]);
+  v.push(['low hp', { hp: s.hp * 0.3 }], ['tier2', { tier: 2 }], ['tier3', { tier: 3 }]);
+  for (const x of (EX[k] || [])) v.push(x);
+  if (s.comp || k === 'lantern') v.push(['info util .9', {}, { info: { util: 0.9, err: 0 } }], ['util 1.2', {}, { info: { util: 1.2, err: 0 } }], ['err .4', {}, { info: { util: 0.5, err: 0.4 } }]);
+  v.push(['selected', {}, { selected: true }]);
+  for (const [lab, p, o] of v) ent(g, lab, base(k, p), o || {}, s.w, s.h);
+}
+
+g = section('RESOURCES (ready / not ready / selected)');
+for (const k of Object.keys(RESOURCES)) {
+  if (k === 'tree') for (const b of [0, 1, 2]) { ent(g, 'tree big' + b, { k, ready: true, big: b }, {}, 1, 3); ent(g, 'stump b' + b, { k, ready: false, big: b }, {}, 1, 3); }
+  else { ent(g, k, { k, ready: true }, {}); ent(g, k + ' ✗', { k, ready: false }, {}); }
+}
+ent(g, 'tree sel', { k: 'tree', ready: true, big: 1 }, { selected: true }, 1, 3);
+ent(g, 'rock sel', { k: 'rock', ready: true }, { selected: true });
+
+g = section('PLAYERS: hue / tools / act / ghost / me');
+const hands = [null, 'axe', 'pickaxe', 'spear', 'torch'];
+hands.forEach((h, i) => ent(g, 'idle ' + (h || 'fist'), { k: 'player', hue: i * 70, act: 'idle', fx: 1, eq: { hand: h && { i: h }, body: null }, hp: 100, mhp: 100 }, {}, 1, 1));
+hands.forEach((h, i) => ent(g, 'walk ' + (h || 'fist') + ' ←', { k: 'player', hue: 30 + i * 70, act: 'walk', fx: -1, eq: { hand: h && { i: h }, body: i & 1 ? { i: 'vest' } : null } }, {}, 1, 1));
+hands.forEach((h, i) => ent(g, 'work ' + (h || 'fist'), { k: 'player', hue: 200 + i * 30, act: i === 3 ? 'attack' : 'work', fx: 1, eq: { hand: h && { i: h }, body: { i: 'vest' } } }, {}, 1, 1));
+ent(g, 'eat', { k: 'player', hue: 120, act: 'eat', fx: 1, eq: {} });
+ent(g, 'me', { k: 'player', hue: 10, act: 'idle', fx: 1, eq: {} }, { me: true });
+ent(g, 'selected', { k: 'player', hue: 300, act: 'idle', fx: 1, eq: {} }, { selected: true });
+ent(g, 'torch lit', { k: 'player', hue: 40, act: 'walk', fx: 1, lit: true, eq: { hand: { i: 'torch' } } }, { dark: 1 });
+ent(g, 'ghost', { k: 'player', hue: 200, ghost: true, fx: 1 }, {});
+ent(g, 'ghost ← me', { k: 'player', hue: 90, ghost: true, fx: -1 }, { me: true });
+
+g = section('MOBS');
+for (const k of Object.keys(MOBS)) { ent(g, k, { k, hp: MOBS[k].hp, mhp: MOBS[k].hp, fx: 1 }); ent(g, k + ' ← hurt', { k, hp: MOBS[k].hp * 0.4, mhp: MOBS[k].hp, fx: -1 }); ent(g, k + ' sel', { k, hp: MOBS[k].hp, mhp: MOBS[k].hp, fx: 1 }, { selected: true }); }
+
+g = section('ITEM entities (dropped)');
+for (const k of Object.keys(ITEMS)) ent(g, k, { k: 'item', item: k, n: k === 'wood' ? 3 : 1 }, {}, 1, 1, 6);
+
+g = section('USERS (mood 1 .. 0)');
+cell(g, 'crowd', 240, 70, (ctx) => { const t = performance.now() / 1000; for (let i = 0; i < 9; i++) drawUser(ctx, 20 + i * 25, 36, t, i + 1, 1 - i / 8); });
+cell(g, 'crowd big', 240, 70, (ctx) => { const t = performance.now() / 1000; for (let i = 0; i < 9; i++) drawUser(ctx, 20 + i * 25, 36, t, i * 5 + 2, i < 4 ? 0.1 : 0.9); });
+
+g = section('PLACEMENT GHOSTS (valid / invalid)');
+for (const k of Object.keys(STRUCTS)) {
+  const s = STRUCTS[k];
+  cell(g, k + ' ok', s.w * 48 + 30, s.h * 48 + 60, (ctx, w, h) => drawGhost(ctx, k, w / 2, h / 2 + 8, true, s.w, s.h));
+  cell(g, k + ' bad', s.w * 48 + 30, s.h * 48 + 60, (ctx, w, h) => drawGhost(ctx, k, w / 2, h / 2 + 8, false, s.w, s.h));
+}
+
+g = section('FX (looping p 0..1)');
+for (const k of ['hit', 'poof', 'boom', 'heal', 'lightning']) cell(g, k, 100, 110, (ctx, w, h) => { const p = (performance.now() / 1200) % 1; drawFxSpark(ctx, w / 2, h / 2 + 20, p, k); });
+
+g = section('DEPTH SORT demo (zOf)');
+cell(g, 'mixed scene', 420, 200, (ctx, w, h) => {
+  const t = performance.now() / 1000;
+  const list = [
+    { id: 1, k: 'tree', ready: true, big: 2, x: 60, y: 90 }, { id: 2, k: 'app', x: 130, y: 100, w: 1, h: 1, on: true, tier: 1, hp: 100, mhp: 120 },
+    { id: 3, k: 'player', hue: 20, x: 130 + Math.sin(t) * 40, y: 110 + Math.cos(t) * 20, act: 'walk', fx: Math.cos(t) > 0 ? -1 : 1, eq: { hand: { i: 'axe' } } },
+    { id: 4, k: 'gateway', x: 250, y: 110, w: 2, h: 2, on: true, tier: 1, hp: 200, mhp: 200, waf: true }, { id: 5, k: 'gremlin', x: 340, y: 120, fx: -1 },
+    { id: 6, k: 'db', x: 350, y: 70, w: 1, h: 1, on: true, shards: 3, leader: true, tier: 2, hp: 100, mhp: 160 }, { id: 7, k: 'rock', ready: true, x: 40, y: 150 },
+  ];
+  list.sort((a, b) => zOf(a) - zOf(b));
+  for (const e of list) drawEntity(ctx, e, { t, info: null, selected: false, me: false, dark: 0 });
+});
+
+function frame() { for (const f of cells) f(); requestAnimationFrame(frame); }
+frame();
+window.__ready = true;
+</script>
+</body>
+</html>

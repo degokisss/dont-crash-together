@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Don't Crash Together — sinh tồn để học kiến trúc hệ thống</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="menu">
+  <div class="menu-card">
+    <h1>Don't Crash <em>Together</em></h1>
+    <p class="sub">Game sinh tồn co-op để hiểu sâu kiến trúc hệ thống. Bạn và đồng đội là kỹ sư on-call: thu thập tài nguyên, dựng hạ tầng, giữ ánh sáng (giám sát) khi đêm xuống và sống sót qua từng sự cố.</p>
+    <label class="field">Tên kỹ sư <input id="name" maxlength="16" placeholder="Ví dụ: Linh" autocomplete="off"></label>
+    <div class="field">Chọn chuyên môn <div id="roles" class="roles"></div></div>
+    <div class="row">
+      <button id="btn-solo-continue" class="btn primary" hidden>Tiếp tục thế giới solo</button>
+      <button id="btn-solo-new" class="btn primary">Chơi một mình</button>
+    </div>
+    <div class="coop">
+      <label class="field inline">Phòng co-op <input id="room" maxlength="24" value="main" autocomplete="off"></label>
+      <button id="btn-coop" class="btn">Vào phòng co-op</button>
+    </div>
+    <div id="rooms" class="rooms"></div>
+    <button id="btn-how" class="btn link">Cách chơi &amp; ánh xạ sang kiến trúc</button>
+    <div id="howto" class="howto">
+      <div class="cols">
+        <div>
+          <h3>Điều khiển</h3>
+          <ul>
+            <li><b>WASD</b> di chuyển · <b>chuột trái</b> thu thập / tấn công / mở công trình</li>
+            <li><b>Space</b> đánh quái gần nhất · <b>E</b> nhặt / thu thập gần nhất</li>
+            <li><b>1-9, 0, -, =</b> dùng đồ trong túi · chuột phải vào ô để vứt</li>
+            <li><b>C</b> chế tạo &amp; xây · <b>M / Tab</b> sơ đồ hệ thống &amp; dashboard</li>
+            <li><b>K</b> sổ tay Field Guide · <b>Enter</b> chat · <b>Esc</b> hủy / menu</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Sinh tồn = kiến trúc</h3>
+          <ul>
+            <li><b>Bóng tối</b> = những gì bạn không giám sát. Gremlin chỉ gặm thứ nằm ngoài vùng sáng.</li>
+            <li><b>Nhiên liệu</b> máy phát = chi phí cloud. Càng nhiều component càng đốt nhanh.</li>
+            <li><b>Tỉnh táo</b> = tải nhận thức. Độ phức tạp cao + thiếu runbook → "cảnh báo giả".</li>
+            <li><b>Sự cố</b> mỗi mùa dạy một pattern: spike, stampede, partition, DDoS...</li>
+            <li>Sau mỗi sự cố có <b>post-mortem</b> phân tích kiến trúc thật của bạn.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="game" hidden>
+  <div id="stage"><canvas id="canvas"></canvas><div id="vignette"></div></div>
+  <div id="hud">
+    <div id="meters"></div>
+    <div id="players"></div>
+    <div id="clock"></div>
+    <div id="banner"></div>
+    <div id="usercard"></div>
+    <div id="goals"></div>
+    <div id="cards"></div>
+    <div id="toasts"></div>
+    <div id="chatlog"></div>
+    <input id="chat-in" maxlength="140" placeholder="Nói gì đó... (Enter để gửi)" autocomplete="off">
+    <div id="bottom">
+      <div id="equip"></div>
+      <div id="hotbar"></div>
+    </div>
+    <div id="toolbar"></div>
+    <div id="craft" class="panel" hidden></div>
+    <div id="inspector" class="panel" hidden></div>
+    <div id="minimap"><canvas width="150" height="150"></canvas></div>
+    <div id="modebar" hidden></div>
+    <div id="tip" hidden></div>
+  </div>
+  <div id="dash" class="overlay" hidden></div>
+  <div id="codex" class="overlay" hidden></div>
+  <div id="modal" class="overlay" hidden></div>
+  <div id="pause" class="overlay" hidden></div>
+</div>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

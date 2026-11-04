@@ -1,0 +1,14 @@
+{
+  "name": "dont-crash-together",
+  "version": "1.0.0",
+  "description": "Game sinh tồn co-op (kiểu Don't Starve Together) để học kiến trúc hệ thống",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js",
+    "sim": "node tools/sim-test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
