@@ -138,7 +138,7 @@ export const HUD = {
     } else {
       detail = `<div class="blind">Số liệu chi tiết bị che: Gateway nằm ngoài vùng Đèn giám sát (hoặc mất điện). Bạn chỉ thấy mức hài lòng của khách.</div>`;
     }
-    const key = users + '|' + sat + '|' + (g ? g.demand + '' + Math.round(g.p99) + g.ok.toFixed(3) + g.detail : 'x') + '|' + (insane ? Math.floor(G.time) : 0);
+    const key = users + '|' + sat + '|' + (g ? (g.detail ? g.demand + '' + Math.round(g.p99) + g.ok.toFixed(3) : 'blind') : 'x') + '|' + (insane ? Math.floor(G.time) : 0);
     if (key === HUD._ucKey) return;
     HUD._ucKey = key;
     el.usercard.innerHTML = `

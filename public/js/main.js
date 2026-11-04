@@ -269,19 +269,22 @@ function bindMouse() {
 
 // ------------------------------------------------------------------ vòng lặp
 let last = performance.now(), pingT = 0;
+let lastErr = '';
+function reportError(e) { const m = String(e && e.stack || e); if (m !== lastErr) { lastErr = m; console.error(e); } }
 function loop(now) {
   if (!running) return;
+  requestAnimationFrame(loop); // đặt lịch trước: một lỗi UI không được làm chết cả vòng lặp
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   G.time = G.tmBase + (now - G.tmAt) / 1000;
-  updateBuildPos();
-  if (G.tiles) renderer.frame(dt, now);
-  HUD.frame(dt);
-  Inspector.frame();
-  Dashboard.frame();
+  const step = (fn) => { try { fn(); } catch (e) { reportError(e); } };
+  step(updateBuildPos);
+  if (G.tiles) step(() => renderer.frame(dt, now));
+  step(() => HUD.frame(dt));
+  step(() => Inspector.frame());
+  step(() => Dashboard.frame());
   pingT += dt;
   if (pingT > 3 && !G.solo) { pingT = 0; send({ t: 'ping', c: performance.now() }); }
-  requestAnimationFrame(loop);
 }
 
 document.addEventListener('visibilitychange', () => { if (G.solo && G.net && G.net.pause) G.net.pause(document.hidden); });

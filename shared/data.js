@@ -116,7 +116,7 @@ export const COMP = {
     shardCost: { copper: 6, silicon: 4, fiber: 1 },
   },
   replica: {
-    layer: 6, watts: [2, 3, 5], cap: [220, 480, 1000], base: [15, 13, 12],
+    layer: 6, watts: [2, 3, 5], cap: [220, 480, 1000], base: [15, 13, 12], out: [],
     upgrade: [null, { copper: 8, silicon: 6, fiber: 2 }, { copper: 14, silicon: 10, fiber: 4 }],
   },
 };
