@@ -16,7 +16,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 
 function serveFile(res, base, rel) {
   const file = path.normalize(path.join(base, rel));
-  if (!file.startsWith(base)) { res.writeHead(403).end('forbidden'); return; }
+  if (file !== base && !file.startsWith(base + path.sep)) { res.writeHead(403).end('forbidden'); return; }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404).end('not found'); return; }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -25,8 +25,13 @@ function serveFile(res, base, rel) {
 }
 
 const server = http.createServer((req, res) => {
+  try { handle(req, res); } catch (e) { console.error('[http]', e); if (!res.headersSent) res.writeHead(500); res.end(); }
+});
+
+function handle(req, res) {
   const url = new URL(req.url, 'http://x');
-  let p = decodeURIComponent(url.pathname);
+  let p;
+  try { p = decodeURIComponent(url.pathname); } catch { res.writeHead(400).end('bad request'); return; }
   if (p === '/api/rooms') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify([...rooms.values()].map((r) => ({ name: r.name, players: r.clients.size, day: r.world.clock.day, users: Math.round(r.world.users) }))));
@@ -35,7 +40,7 @@ const server = http.createServer((req, res) => {
   if (p.startsWith('/shared/')) return serveFile(res, path.join(ROOT, 'shared'), p.slice(8));
   if (p === '/') p = '/index.html';
   serveFile(res, path.join(ROOT, 'public'), p.slice(1));
-});
+}
 
 // ---- phòng ----
 const rooms = new Map();
@@ -70,12 +75,15 @@ wss.on('connection', (ws, req) => {
   ws.on('message', (data) => {
     let m;
     try { m = JSON.parse(data.toString()); } catch { return; }
-    if (!joined) {
-      if (m.t !== 'join') return;
-      joined = !!room.join(client, { name: m.name, token: m.token, role: m.role });
-      return;
-    }
-    room.msg(client, m);
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+    try {
+      if (!joined) {
+        if (m.t !== 'join') return;
+        joined = !!room.join(client, { name: m.name, token: m.token, role: m.role });
+        return;
+      }
+      room.msg(client, m);
+    } catch (e) { console.error('[ws] lỗi xử lý tin nhắn:', e); }
   });
   ws.on('close', () => { if (joined) room.leave(client); });
   ws.on('error', () => {});
@@ -85,6 +93,7 @@ function shutdown() {
   for (const r of rooms.values()) { try { fs.writeFileSync(path.join(SAVES, r.name + '.json'), r.world.toSave()); } catch (e) { console.error(e); } }
   process.exit(0);
 }
+process.on('uncaughtException', (e) => console.error('[uncaught]', e));
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 

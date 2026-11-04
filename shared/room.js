@@ -81,7 +81,9 @@ export class Room {
   start() {
     if (this.timer) return;
     this.last = Date.now();
-    this.timer = setInterval(() => this.pump(), 1000 / TICK_RATE / 2);
+    this.timer = setInterval(() => {
+      try { this.pump(); } catch (e) { console.error('[room ' + this.name + '] lỗi tick:', e); }
+    }, 1000 / TICK_RATE / 2);
   }
   stop() { clearInterval(this.timer); this.timer = null; }
 
