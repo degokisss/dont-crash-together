@@ -452,6 +452,7 @@ export class Director {
     if (def.start(w, inc, f) === false) { this.active = this.active.filter((x) => x !== inc); return null; }
     const t = inc.target ? w.ents.get(inc.target) : null;
     inc.wasMonitored = t ? w.isMonitored(t.x, t.y) : f.monitored > 0.5;
+    inc.alert = w.alerts.snapshot(t);
     if (drill) this.mods.drill = true;
     w.unlock('inc-' + id);
     const vis = def.visible ? def.visible(w, inc) : true;
@@ -506,7 +507,7 @@ export class Director {
       s.peakDisk = Math.max(s.peakDisk, disk);
       if (disk >= 1) s.diskFull = true;
       s.minSat = Math.min(s.minSat, w.sat);
-      if (success < SLO.success || p99 > SLO.p99) s.badSec += 0.5;
+      if (success < SLO.success || p99 > SLO.p99) { s.badSec += 0.5; s.badAt ??= w.time; }
       // sự cố âm thầm: thông báo khi khách hàng bắt đầu phàn nàn
       if (!inc.announced && w.sat < 85 && !inc.drill) {
         inc.announced = true;
@@ -526,11 +527,16 @@ export class Director {
     const A = { ...inc.stats };
     const dur = w.time - inc.t0;
     const checks = def.diag(w, inc, inc.facts, A);
+    checks.push(...w.alerts.postmortem(inc));
     // dùng facts hiện tại cho các cấu hình có thể thay đổi giữa sự cố (jitter,...)? Dùng facts lúc bắt đầu: đó là kiến trúc thật khi sự cố xảy ra.
     const pm = {
       uid: inc.uid, id: inc.id, name: inc.name, day: inc.day, drill: inc.drill, dur: Math.round(dur),
-      impact: { peakErr: Math.round(A.peakErr * 100), peakP99: Math.round(A.peakP99), badSec: Math.round(A.badSec), minSat: Math.round(A.minSat), users: Math.round(w.users - A.usersStart), lost: inc.lost || 0 },
-      checks, lesson: def.lesson, concepts: def.concepts, codex: ['inc-' + inc.id, ...def.concepts],
+      impact: {
+        peakErr: Math.round(A.peakErr * 100), peakP99: Math.round(A.peakP99), badSec: Math.round(A.badSec), minSat: Math.round(A.minSat), users: Math.round(w.users - A.usersStart), lost: inc.lost || 0,
+        mttd: inc.detectedAt === undefined ? null : Math.round(inc.detectedAt - inc.t0),
+        mtta: inc.ackedAt === undefined ? null : Math.round(inc.ackedAt - inc.detectedAt),
+      },
+      checks, lesson: def.lesson, concepts: def.concepts, codex: ['inc-' + inc.id, ...def.concepts, 'concept-alerting'],
     };
     const okN = checks.filter((c) => c.ok).length;
     let kp = okN + (okN === checks.length && checks.length ? KP_PERFECT_BONUS : 0);

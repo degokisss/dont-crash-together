@@ -277,3 +277,24 @@ export const ROLES = {
 export const KP_START = 3;
 export const KP_PER_CODEX = 1;
 export const KP_PERFECT_BONUS = 2;
+
+// ---------- Cảnh báo & on-call (cấu hình lantern.cfg.alert) ----------
+// Mỗi mức là một bộ ngưỡng: một quy tắc (ALERT_RULES) vi phạm liên tục `for` giây thì thành alert đang kêu.
+// Đánh đổi: ngưỡng thấp báo sớm nhưng kêu cả khi không có sự cố (báo động giả, alert fatigue); ngưỡng cao yên tĩnh nhưng báo muộn.
+//   err: tỉ lệ lỗi của node (0..1), p99: ms, util: utilization (1 = đầy công suất), disk: đĩa DB (0..1).
+export const ALERT = {
+  off: { name: 'Tắt' },
+  sensitive: { name: 'Nhạy', for: 2, err: 0.005, p99: 300, util: 0.5, disk: 0.5 },
+  normal: { name: 'Vừa', for: 6, err: 0.05, p99: 1200, util: 0.92, disk: 0.85 },
+  strict: { name: 'Chặt', for: 20, err: 0.3, p99: 4500, util: 1.2, disk: 0.97 },
+};
+// metric đọc từ số liệu node trong flow.view.n (chỉ có cho node nằm trong vùng giám sát). sev: crit | warn.
+export const ALERT_RULES = {
+  err: { name: 'Tỉ lệ lỗi', sev: 'crit', metric: (m) => m.err, fmt: (v) => Math.round(v * 100) + '%' },
+  p99: { name: 'p99', sev: 'warn', metric: (m) => m.lat * 4.6, fmt: (v) => Math.round(v) + ' ms' },
+  util: { name: 'Utilization', sev: 'warn', metric: (m) => m.u, fmt: (v) => Math.round(v * 100) + '%' },
+  disk: { name: 'Đĩa', sev: 'warn', metric: (m) => m.disk, fmt: (v) => Math.round(v * 100) + '%' },
+};
+// ack: giây để người on-call ack trước khi alert escalate; clear: giây hết vi phạm liên tục thì alert tự đóng (chống nhấp nháy);
+// escSanity/falseSanity: tỉnh táo mất của người on-call khi để escalate / khi bị page vì báo động giả; mttd: ngưỡng "phát hiện nhanh" trong post-mortem.
+export const ONCALL = { ack: 20, clear: 10, escSanity: 15, falseSanity: 4, mttd: 20 };
