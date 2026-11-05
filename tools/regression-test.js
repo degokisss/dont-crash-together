@@ -252,3 +252,210 @@ run('a save from before backups existed loads with backup off', () => {
   assert.equal(db.cfg.backup, 'off');
   assert.equal(w.flow.view.n[db.id].snapAge, null);
 });
+
+// ---------- Alerting & on-call ----------
+// Thế giới monolith mặc định (Gateway -> App -> DB, một Đèn giám sát phủ cả ba) với mức alert và số người dùng chọn trước.
+function alertRig(level, users = 40) {
+  const room = new Room({ seed: 77 });
+  const w = room.world;
+  const p = room.join({ send() {} }, { name: 'T', token: 'a' });
+  const S = (k) => [...w.structs].filter((s) => s.k === k);
+  w.addStruct('generator', 47, 45);
+  const run = (s) => { for (let i = 0; i < s / DT; i++) { w.step(DT); for (const g of S('generator')) g.fuel = 200; room.snapshot(false); } };
+  const t = { room, w, p, S, run };
+  t.w.users = users;
+  t.w.director.nextAt = 1e9; // chỉ có sự cố do test gây ra
+  for (const l of t.S('lantern')) l.cfg.alert = level;
+  t.p2 = null;
+  t.join2 = () => (t.p2 = t.room.join({ send() {} }, { name: 'U', token: 'b' }));
+  t.pages = () => t.w.alerts.stats.pages;
+  t.firing = () => t.w.alerts.groups().filter((g) => g.state === 'firing');
+  t.crashApp = () => { t.w.crash(t.S('app')[0], 'zap'); for (let i = 0; i < 40 / DT && !t.firing().length; i++) t.run(DT); }; // crash App và chờ tới khi alert kêu
+  return t;
+}
+const toasts = (msgs, pid) => msgs.flatMap((s) => { const m = JSON.parse(s); return m.t === 'ev' ? m.ev : (m.ev || []); }).filter((e) => e.t === 'toast' && e.to === pid).map((e) => e.msg);
+
+run('a seeded spike pages the on-call player when alerts are normal and nobody when they are off', () => {
+  const on = alertRig('normal');
+  const off = alertRig('off');
+  for (const t of [on, off]) { t.run(10); t.w.director.create('spike').mult = 3; t.run(50); }
+  assert.ok(on.pages() >= 1, 'normal alerting pages on the spike');
+  assert.equal(on.w.alerts.oncall, on.p.pid, 'the only player is on-call');
+  assert.ok(on.w.flow.view.al.list.length >= 1, 'the firing alert is replicated to clients in the system view');
+  assert.equal(off.pages(), 0, 'alerts off: nobody is paged');
+  assert.equal(off.w.flow.view.al.list.length, 0);
+});
+
+run('a page reaches the on-call player as a loud targeted toast and the others as a quiet notice', () => {
+  const room = new Room({ seed: 77 });
+  const w = room.world;
+  const a = [], b = [];
+  const p1 = room.join({ send: (s) => a.push(s) }, { name: 'A', token: 'a' });
+  const p2 = room.join({ send: (s) => b.push(s) }, { name: 'B', token: 'b' });
+  w.addStruct('generator', 47, 45); w.addStruct('lantern', 45, 38);
+  w.users = 40; w.director.nextAt = 1e9;
+  const app = [...w.structs].find((s) => s.k === 'app');
+  for (let i = 0; i < 5 / DT; i++) { w.step(DT); room.snapshot(false); }
+  w.crash(app, 'zap');
+  for (let i = 0; i < 15 / DT; i++) { w.step(DT); for (const g of w.structs) if (g.k === 'generator') g.fuel = 200; room.snapshot(false); }
+  assert.equal(w.alerts.oncall, p1.pid);
+  assert.ok(toasts(a, p1.pid).some((m) => m.startsWith('PAGE')), 'on-call is paged');
+  assert.ok(!toasts(b, p2.pid).some((m) => m.startsWith('PAGE')), 'the other player is not paged');
+  assert.ok(toasts(b, p2.pid).some((m) => m.includes('đang bị page')), 'the other player sees who is being paged');
+});
+
+run('acking in time prevents escalation; ignoring the page escalates, costs sanity and lets anyone ack', () => {
+  const t = alertRig('normal');
+  const { w, p } = t;
+  const p2 = t.join2();
+  t.crashApp();
+  assert.equal(t.firing().length, 1, 'the crash fires an alert');
+  w.cmd(p2.pid, { c: 'ack' });
+  assert.equal(t.firing().length, 1, 'only the on-call can ack before escalation');
+  t.run(10);
+  w.cmd(p.pid, { c: 'ack' });
+  assert.equal(t.firing().length, 0, 'on-call ack in time');
+  assert.equal(w.alerts.groups()[0].state, 'acked');
+  t.run(30);
+  assert.equal(w.alerts.stats.escalations, 0, 'an acked alert never escalates');
+  assert.ok(w.alerts.stats.acked === 1 && w.alerts.stats.ackSecs <= 15, 'MTTA recorded');
+  // không ack
+  const u = alertRig('normal');
+  const q = u.join2();
+  u.crashApp();
+  const before = u.p.sanity;
+  u.run(18);
+  assert.equal(u.w.alerts.stats.escalations, 0, 'inside the ack window nothing happens yet');
+  u.run(6);
+  assert.equal(u.w.alerts.stats.escalations, 1, 'escalated after the ack window');
+  assert.ok(before - u.p.sanity >= 12, `on-call lost sanity (${before} -> ${u.p.sanity})`);
+  u.w.cmd(q.pid, { c: 'ack' });
+  assert.equal(u.firing().length, 0, 'once escalated anyone can ack');
+});
+
+run('the on-call rotates at each new day and c_oncall takes the shift', () => {
+  const t = alertRig('normal', 24);
+  const p2 = t.join2();
+  t.run(1);
+  assert.equal(t.w.alerts.oncall, t.p.pid);
+  t.run(160); // qua ranh giới ngày
+  assert.equal(t.w.alerts.oncall, p2.pid, 'next player takes the shift on the new day');
+  t.w.cmd(t.p.pid, { c: 'oncall' });
+  assert.equal(t.w.alerts.oncall, t.p.pid, 'a player can take the shift');
+});
+
+run('sensitive pages on a quiet run (false pages), strict stays silent, and strict detects a crash later than normal', () => {
+  const quiet = {};
+  for (const level of ['sensitive', 'normal', 'strict']) {
+    const t = alertRig(level, 24);
+    t.run(300);
+    quiet[level] = { pages: t.pages(), fake: t.w.alerts.stats.falsePages };
+  }
+  assert.ok(quiet.sensitive.fake >= 1, `sensitive false pages: ${quiet.sensitive.fake}`);
+  assert.equal(quiet.normal.pages, 0);
+  assert.equal(quiet.strict.pages, 0);
+  const detect = {};
+  for (const level of ['normal', 'strict']) {
+    const t = alertRig(level);
+    t.run(10);
+    t.w.crash(t.S('app')[0], 'zap');
+    const inc = t.w.director.active.find((i) => i.id === 'crash');
+    t.run(40);
+    assert.ok(inc.detectedAt !== undefined, `${level} detects the crash`);
+    detect[level] = inc.detectedAt - inc.t0;
+  }
+  assert.ok(detect.strict > detect.normal, `strict ${detect.strict}s vs normal ${detect.normal}s`);
+});
+
+run('components outside every lantern radius never page', () => {
+  const t = alertRig('sensitive');
+  const far = t.w.addStruct('app', 5, 5);
+  far.crashed = true;
+  t.run(20);
+  assert.equal(t.w.flow.view.n[far.id], undefined, 'no metrics outside the monitored area');
+  assert.ok(![...t.w.alerts.reg.values()].some((a) => a.node === far.id), 'no alert state for it either');
+  t.w.crash(t.S('app')[0], 'zap');
+  t.run(20);
+  assert.ok(t.w.alerts.groups().some((g) => g.node === t.S('app')[0].id), 'the monitored app does page');
+});
+
+run('save/load does not page an already firing alert again and keeps its escalation clock', () => {
+  const t = alertRig('normal');
+  t.crashApp();
+  t.run(5);
+  const before = t.firing()[0];
+  const escAt = before.lead.escAt;
+  const save = t.w.toSave();
+  const w2 = new World(9, save);
+  w2.addPlayer(1, 'T', 'a', 0);
+  w2.users = 40;
+  const got = [];
+  const say = w2.say.bind(w2);
+  w2.say = (msg, kind, to) => { got.push(msg); say(msg, kind, to); };
+  for (let i = 0; i < 8 / DT; i++) { w2.step(DT); for (const g of w2.structs) if (g.k === 'generator') g.fuel = 200; }
+  assert.equal(got.filter((m) => m.startsWith('PAGE')).length, 0, 'no second page after reload');
+  const g2 = w2.alerts.groups();
+  assert.equal(g2.length, 1);
+  assert.equal(g2[0].state, 'firing');
+  assert.equal(g2[0].lead.escAt, escAt, 'same escalation deadline');
+  assert.equal(w2.alerts.oncall, 1, 'the on-call shift survives the reload');
+  assert.equal(w2.alerts.stats.pages, t.pages());
+});
+
+run('the post-mortem reports MTTD, MTTA and whether the alert beat the SLO breach', () => {
+  const t = alertRig('normal');
+  t.run(10);
+  const app = t.S('app')[0];
+  t.crashApp();
+  t.run(4);
+  t.w.cmd(t.p.pid, { c: 'ack' });
+  t.p.x = app.x; t.p.y = app.y;
+  t.w.c_reboot(t.p, { id: app.id });
+  t.run(30);
+  const pm = t.w.log.at(-1);
+  assert.equal(pm.id, 'crash');
+  assert.ok(pm.impact.mttd >= 3 && pm.impact.mttd <= 15, `mttd ${pm.impact.mttd}`);
+  assert.ok(pm.impact.mtta >= 3 && pm.impact.mtta <= 12, `mtta ${pm.impact.mtta}`);
+  const row = (re) => pm.checks.find((c) => re.test(c.t));
+  assert.equal(row(/Alert phát hiện trước khi SLO vỡ/).ok, false, 'a single-app crash breaks the SLO before any alert can');
+  assert.equal(row(/^MTTD/).ok, true);
+  assert.equal(row(/^MTTA/).ok, true);
+  assert.ok(row(/Báo động giả/), 'false-page row present');
+});
+
+run('an incident in an unmonitored or alert-off setup is reported as undetected in the post-mortem', () => {
+  const t = alertRig('off');
+  t.run(10);
+  const app = t.S('app')[0];
+  t.w.crash(app, 'zap');
+  t.run(5);
+  t.p.x = app.x; t.p.y = app.y;
+  t.w.c_reboot(t.p, { id: app.id });
+  t.run(30);
+  const pm = t.w.log.at(-1);
+  const c = pm.checks.find((x) => /Alert phát hiện/.test(x.t));
+  assert.equal(c.ok, false);
+  assert.match(c.d, /Tắt/);
+  assert.equal(pm.impact.mttd, null);
+});
+
+run('only known alert levels are accepted for a lantern, and choosing one unlocks the Field Guide entry', () => {
+  const t = alertRig('normal');
+  const l = t.S('lantern')[0];
+  t.w.c_config(t.p, { id: l.id, key: 'alert', val: 'paranoid' });
+  assert.equal(l.cfg.alert, 'normal');
+  t.w.c_config(t.p, { id: l.id, key: 'alert', val: 'strict' });
+  assert.equal(l.cfg.alert, 'strict');
+  assert.ok(t.w.codex.has('concept-alerting'));
+});
+
+run('a save from before alerting loads with the lantern on the default alert level', () => {
+  const t = alertRig('normal');
+  t.run(2);
+  const save = JSON.parse(t.w.toSave());
+  delete save.alerts;
+  for (const e of save.ents) if (e.k === 'lantern') delete e.cfg;
+  const w = new World(9, save);
+  for (let i = 0; i < 2 / DT; i++) w.step(DT);
+  assert.ok([...w.structs].filter((s) => s.k === 'lantern').every((l) => l.cfg.alert === 'normal'));
+});
