@@ -178,7 +178,7 @@ export const DEPLOY = {
   direct: { name: 'Deploy thẳng', reboot: 5, share: 1, window: 0, rollback: 4, watts: 0, cx: 0, cost: {} },
   canary: { name: 'Canary', reboot: 0, share: 0.1, window: 24, rollback: 0, watts: 0.25, cx: 0.5, cost: { scrap: 1 } },
   bluegreen: { name: 'Blue/green', reboot: 0, share: 1, window: 18, rollback: 0, watts: 1, cx: 1.5, cost: { scrap: 2, copper: 1 } },
-  k8s: { name: 'Rolling update (Kubernetes)', orch: true, reboot: 1, share: 1, window: 0, rollback: 4, watts: 0, cx: 0, cost: {} },
+  k8s: { name: 'Rolling update K8s', orch: true, reboot: 1, share: 1, window: 0, rollback: 4, watts: 0, cx: 0, cost: {} },
 };
 export const DEPLOY_CHOICES = Object.keys(DEPLOY).filter((k) => !DEPLOY[k].orch);
 // Bản deploy lỗi làm hỏng bấy nhiêu phần request mà nó phục vụ (flow.js nhân với phần traffic đang chạy bản lỗi).
