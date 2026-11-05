@@ -68,15 +68,15 @@ export const CODEX_COMPONENTS = [
 <li><b>Tier 1–3</b>: scale up cần <b>reboot ~10 s</b> — vertical scaling có downtime và có trần.</li>
 <li><b>Retries 0–3</b> + <b>backoff+jitter</b>: retry cứu lỗi thoáng qua nhưng nhân tải lên downstream đang yếu; backoff có jitter làm các lần thử rải đều.</li>
 <li><b>Circuit breaker</b>: mở khi &gt;50% lỗi từ downstream, fail fast và thăm dò 5% để biết khi nào hồi phục.</li>
-<li><b>Deploy</b>: 30% rủi ro bản lỗi (~40% request của node đó lỗi, <i>không thấy nếu không giám sát</i>). Có <b>Rollback</b> và <b>Restart</b>.</li>
+<li><b>Deploy</b>: 30% rủi ro bản lỗi (~40% request mà bản lỗi phục vụ bị lỗi, <i>không thấy nếu không giám sát</i>). Chọn <b>chiến lược deploy</b> ở Cấu hình: <i>deploy thẳng</i> (reboot 5 s, 100% request chạm bản mới), <i>canary</i> (10% request trong cửa sổ 24 s, rồi tự lên 100% nếu không ai Rollback), <i>blue/green</i> (không downtime, Rollback tức thì trong cửa sổ 18 s, tốn gấp đôi điện). Có <b>Promote</b>, <b>Rollback</b> và <b>Restart</b>. App container hoá nằm sau Kubernetes luôn dùng rolling update của K8s.</li>
 <li><b>Module Docker</b>: container hoá App — restart nhanh gấp đôi, deploy lỗi giảm xuống 12% (Backend Dev 5%), đổi lấy -4% công suất và độ phức tạp +1. Là điều kiện để <b>Kubernetes</b> tự chữa, HPA và rolling update cho App; không container thì K8s chỉ cân bằng tải.</li>
 </ul>
-<p>Deploy từng node (canary) giới hạn blast radius; deploy hết cùng lúc là đánh cược.</p>`,
-    pros: ['Stateless nên scale ngang dễ', 'Breaker/backoff giữ hệ thống khỏi sụp dây chuyền', 'Deploy canary + rollback giảm rủi ro', 'Module Docker giảm deploy lỗi và restart nhanh'],
+<p>Deploy từng bước (canary) giới hạn blast radius; deploy hết cùng lúc là đánh cược.</p>`,
+    pros: ['Stateless nên scale ngang dễ', 'Breaker/backoff giữ hệ thống khỏi sụp dây chuyền', 'Deploy canary hoặc blue/green + rollback giảm rủi ro', 'Module Docker giảm deploy lỗi và restart nhanh'],
     cons: ['Scale up cần reboot', 'Retry sai cách gây retry storm', 'Deploy lỗi âm thầm nếu thiếu giám sát', 'Docker: -4% công suất, độ phức tạp +1'],
     real: 'Netflix phổ biến mô hình circuit breaker qua Hystrix; AWS Builders Library khuyến nghị exponential backoff kèm jitter.',
     tryIt: 'Đặt Retries=3 không backoff rồi gây spike; sau đó bật backoff+jitter và breaker, so sánh p99.',
-    see: ['concept-retry-storm', 'concept-circuit-breaker', 'inc-baddeploy', 'inc-leak', 'concept-scaling', 'comp-docker', 'comp-k8s']
+    see: ['concept-retry-storm', 'concept-circuit-breaker', 'inc-baddeploy', 'concept-deploy-strategies', 'inc-leak', 'concept-scaling', 'comp-docker', 'comp-k8s']
   },
   {
     id: 'comp-cache',

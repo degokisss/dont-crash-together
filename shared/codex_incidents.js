@@ -146,18 +146,20 @@ export const CODEX_INCIDENTS = [
     id: 'inc-baddeploy', cat: 'incident',
     title: 'Bad deploy',
     summary: 'Bản phát hành mới chứa lỗi khiến một phần hoặc toàn bộ request thất bại.',
-    body: `<p>Phần lớn sự cố production bắt nguồn từ thay đổi. Một bản deploy lỗi nếu phát hành đồng loạt sẽ ảnh hưởng toàn bộ người dùng (blast radius lớn); nếu phát hành từng bước (canary) và đo, bạn phát hiện sớm khi mới ảnh hưởng một phần nhỏ. Nếu không giám sát, lỗi âm thầm kéo dài cho tới khi người dùng phàn nàn.</p><p>Trong game: mỗi <b>Deploy</b> có 30% rủi ro bản lỗi → khoảng 40% request của node đó lỗi, và bạn không thấy nếu node ngoài vùng sáng. Deploy <b>từng node</b> (canary) rồi kiểm tra error rate; nếu lỗi, bấm <b>Rollback</b>. Rollback nhanh thường tốt hơn là tìm lỗi trong lúc đang cháy.</p>`,
+    body: `<p>Phần lớn sự cố production bắt nguồn từ thay đổi. Một bản deploy lỗi nếu phát hành đồng loạt sẽ ảnh hưởng toàn bộ người dùng (blast radius lớn); nếu phát hành từng bước (canary) và đo, bạn phát hiện sớm khi mới ảnh hưởng một phần nhỏ. Nếu không giám sát, lỗi âm thầm kéo dài cho tới khi người dùng phàn nàn.</p><p>Trong game: mỗi <b>Deploy</b> có rủi ro bản lỗi (30%, Backend Dev 12%, App container hoá 12%) → bản lỗi làm hỏng khoảng 40% request nó phục vụ, và bạn không thấy nếu node ngoài vùng sáng. Phần request chạm bản lỗi phụ thuộc <b>chiến lược deploy</b> chọn ở Cấu hình của App: <i>deploy thẳng</i> là 100% ngay, <i>canary</i> chỉ 10% trong cửa sổ quan sát (rồi tự lên 100% nếu không ai rollback), <i>blue/green</i> là 100% nhưng rollback tức thì không cần reboot. Nếu lỗi, bấm <b>Rollback</b>: rollback nhanh thường tốt hơn là tìm lỗi trong lúc đang cháy.</p>`,
     pros: [], cons: [],
     real: 'Knight Capital (1/8/2012) mất khoảng 440 triệu USD trong ~45 phút sau khi deploy không đồng bộ: một server vẫn chạy code cũ kích hoạt logic giao dịch lỗi.',
     tryIt: 'Có 3 App sau LB; deploy chỉ một node, xem error rate, rồi rollback nếu lỗi.',
-    see: ['concept-blast-radius', 'concept-observability', 'comp-app', 'concept-postmortem', 'comp-docker', 'comp-k8s', 'concept-containers'],
-    symptoms: ['Error rate tăng ngay sau lần deploy', 'Chỉ một phần request lỗi (~40% của node đó)', 'Node ngoài vùng sáng: không có tín hiệu nào', 'p99 và lỗi cải thiện ngay sau rollback'],
+    see: ['concept-deploy-strategies', 'concept-blast-radius', 'concept-observability', 'comp-app', 'concept-postmortem', 'comp-docker', 'comp-k8s', 'concept-containers'],
+    symptoms: ['Error rate tăng ngay sau lần deploy', 'Chỉ một phần request lỗi (~40% của phần traffic chạy bản mới)', 'Canary: chỉ phần traffic canary lỗi cho tới khi cửa sổ quan sát kết thúc', 'Node ngoài vùng sáng: không có tín hiệu nào', 'p99 và lỗi cải thiện ngay sau rollback'],
     mitigations: [
-      { name: 'Deploy từng node (canary)', how: 'Deploy trên một node trước, quan sát rồi mới tiếp tục.', tradeoff: 'Phát hành chậm hơn; cần ≥ 2 node và đo đạc tốt.' },
+      { name: 'Canary', how: 'Chọn Canary ở Cấu hình App: bản mới chỉ nhận 10% request của node trong 24 s; inspector (khi được giám sát) hiện "canary lỗi X%". Rollback trong cửa sổ không cần reboot.', tradeoff: 'Không ai rollback thì tự lên 100% và lỗi lan toàn bộ; tốn 1 linh kiện mỗi lần, thêm chút điện và độ phức tạp.' },
+      { name: 'Blue/green', how: 'Bản cũ chạy song song 18 s: deploy không downtime và rollback tức thì (chuyển traffic lại, không reboot).', tradeoff: 'Bản mới nhận 100% traffic ngay nên blast radius vẫn lớn; tốn 2 linh kiện + 1 đồng và gấp đôi điện trong cửa sổ.' },
+      { name: 'Deploy từng node', how: 'Với ≥ 2 App sau LB, deploy một node trước, quan sát rồi mới tiếp tục.', tradeoff: 'Phát hành chậm hơn; cần ≥ 2 node và đo đạc tốt.' },
       { name: 'Giám sát', how: 'Giữ App trong vùng sáng để thấy error rate sau deploy.', tradeoff: 'Tốn điện và công theo dõi.' },
       { name: 'Rollback', how: 'Quay về bản trước ngay khi thấy lỗi.', tradeoff: 'Có thể mất tính năng/sửa lỗi; cần artifact bản cũ.' },
       { name: 'Container hoá (Module Docker)', how: 'Image bất biến loại bỏ lệch môi trường "works on my machine": xác suất bản lỗi giảm từ 30% xuống 12% (Backend Dev 12% → 5%).', tradeoff: '-4% công suất, độ phức tạp +1; vẫn không bắt được lỗi logic.' },
-      { name: 'Kubernetes rolling update', how: 'Với App container hoá, deploy chỉ ~1 s downtime và readiness probe thất bại sẽ tự rollback bản lỗi sau ~10 s.', tradeoff: 'Độ phức tạp +6, 4 W điện; control plane là SPOF.' },
+      { name: 'Kubernetes rolling update', how: 'Với App container hoá nằm sau Kubernetes, rolling update thay mọi chiến lược đã chọn: deploy chỉ ~1 s downtime và readiness probe thất bại sẽ tự rollback bản lỗi sau ~10 s.', tradeoff: 'Độ phức tạp +6, 4 W điện; control plane là SPOF.' },
       { name: 'Restart', how: 'Khởi động lại để loại trừ lỗi trạng thái.', tradeoff: 'Không sửa lỗi nếu nguyên nhân là code.' }
     ]
   },
@@ -278,12 +280,12 @@ export const CODEX_INCIDENTS = [
     id: 'concept-blast-radius', cat: 'concept',
     title: 'Blast radius: canary, blue-green, rolling & feature flags',
     summary: 'Thu nhỏ phạm vi ảnh hưởng của thay đổi để lỗi không làm hỏng toàn bộ người dùng.',
-    body: `<p>Blast radius là phần hệ thống/người dùng bị ảnh hưởng khi một thay đổi hỏng. Chiến lược triển khai điều khiển nó: <b>rolling</b> cập nhật từng node; <b>canary</b> cho một phần nhỏ traffic dùng bản mới và đo (error rate, p99) trước khi mở rộng; <b>blue-green</b> chạy hai môi trường song song và chuyển traffic, rollback bằng cách chuyển lại; <b>feature flag</b> tách deploy khỏi release và tắt tính năng tức thì. Điều kiện chung: giám sát tốt và rollback nhanh.</p><p>Trong game: <b>Deploy</b> từng node với 30% rủi ro bản lỗi (~40% request của node lỗi). Có nhiều App sau LB nghĩa là blast radius mỗi lần deploy chỉ là một phần; luôn kiểm tra trong vùng sáng rồi <b>Rollback</b> nếu lỗi.</p>`,
+    body: `<p>Blast radius là phần hệ thống/người dùng bị ảnh hưởng khi một thay đổi hỏng. Chiến lược triển khai điều khiển nó: <b>rolling</b> cập nhật từng node; <b>canary</b> cho một phần nhỏ traffic dùng bản mới và đo (error rate, p99) trước khi mở rộng; <b>blue-green</b> chạy hai môi trường song song và chuyển traffic, rollback bằng cách chuyển lại; <b>feature flag</b> tách deploy khỏi release và tắt tính năng tức thì. Điều kiện chung: giám sát tốt và rollback nhanh.</p><p>Trong game: chọn <b>chiến lược deploy</b> ở Cấu hình của App (xem mục Chiến lược deploy). Có nhiều App sau LB nghĩa là blast radius mỗi lần deploy chỉ là một phần; luôn kiểm tra trong vùng sáng rồi <b>Rollback</b> nếu lỗi.</p>`,
     pros: ['Lỗi chỉ ảnh hưởng một phần nhỏ người dùng', 'Rollback nhanh khi phát hiện sớm', 'Cho phép phát hành thường xuyên và an toàn'],
     cons: ['Cần nhiều hạ tầng (blue-green gấp đôi)', 'Phải hỗ trợ hai phiên bản chạy song song', 'Phụ thuộc giám sát để phát hiện lỗi'],
     real: 'Knight Capital 2012 bị thiệt hại lớn do triển khai không đồng đều trên 8 server; ngược lại Google và Netflix dùng canary analysis tự động trước khi mở rộng.',
     tryIt: 'Deploy trên một trong ba App, quan sát error rate, rồi rollback hoặc tiếp tục.',
-    see: ['inc-baddeploy', 'concept-observability', 'comp-lb', 'comp-app'],
+    see: ['concept-deploy-strategies', 'inc-baddeploy', 'concept-observability', 'comp-lb', 'comp-app'],
     symptoms: [], mitigations: []
   },
   {
@@ -412,6 +414,25 @@ export const CODEX_INCIDENTS = [
     real: 'Google SRE Workbook (chương "Alerting on SLOs") khuyên cảnh báo theo tốc độ đốt error budget nhiều cửa sổ thời gian thay vì ngưỡng đơn giản; PagerDuty và Opsgenie chuẩn hoá luồng on-call, ack và escalation.',
     tryIt: 'Đặt Mức cảnh báo ở Đèn giám sát là Nhạy rồi để yên một lúc để đếm báo động giả; sau đó đặt Chặt và gây crash trong Chaos Lab để so MTTD trong post-mortem.',
     see: ['concept-observability', 'comp-lantern', 'concept-slo', 'concept-postmortem', 'inc-spike'],
+    symptoms: [], mitigations: []
+  },
+  {
+    id: 'concept-deploy-strategies', cat: 'concept',
+    title: 'Chiến lược deploy: big bang, canary & blue/green',
+    summary: 'Cùng một bản lỗi, cách phát hành quyết định bao nhiêu người dùng thấy lỗi và bạn quay lại nhanh cỡ nào.',
+    body: `<p>Ba trục để so sánh: <b>blast radius</b> (bao nhiêu người dùng chạm bản mới), <b>thời gian phát hiện và rollback</b> (lỗi kéo dài bao lâu) và <b>chi phí</b> (hạ tầng chạy song song, độ phức tạp).</p>
+<ul>
+<li><b>Big bang (deploy thẳng)</b>: thay hết trong một lần. Rẻ và đơn giản, nhưng mọi người dùng chạm bản lỗi ngay và có downtime khi khởi động lại; rollback là một lần deploy nữa.</li>
+<li><b>Canary</b>: chỉ một phần nhỏ traffic (10% trong game) dùng bản mới trong một <i>cửa sổ quan sát</i>; bạn so error rate của phần canary với bản cũ rồi mới <i>promote</i> lên 100% hoặc rollback. Blast radius nhỏ, nhưng chỉ bảo vệ được khi có người (hoặc máy) theo dõi: không ai rollback thì hết cửa sổ bản lỗi vẫn tự lên 100%.</li>
+<li><b>Blue/green</b>: dựng môi trường mới (green) song song môi trường cũ (blue) rồi chuyển traffic. Không downtime và rollback tức thì (chuyển lại), nhưng traffic chuyển một lần nên blast radius vẫn lớn, và bạn trả gấp đôi tài nguyên cho tới khi gỡ môi trường cũ; sau đó rollback lại tốn một lần deploy.</li>
+<li><b>Rolling update</b> (Kubernetes): thay từng pod, pod mới lên trước khi pod cũ tắt; readiness probe chặn bản lỗi và tự rollback.</li>
+<li>Trong game: chọn <b>Deploy thẳng / Canary / Blue-green</b> ở Cấu hình của App (Canary tốn 1 linh kiện, Blue/green tốn 2 linh kiện + 1 đồng mỗi lần deploy, cả hai tốn thêm điện và độ phức tạp trong cửa sổ). Nút <b>Promote</b> đẩy bản mới lên 100% sớm, <b>Rollback</b> trong cửa sổ không cần reboot. App container hoá nằm sau Kubernetes luôn dùng rolling update của Kubernetes, bất kể cấu hình.</li>
+</ul>`,
+    pros: ['Canary: lỗi chỉ chạm một phần nhỏ người dùng', 'Blue/green: không downtime, rollback tức thì', 'Cửa sổ quan sát cho bạn thời gian nhìn số liệu trước khi cam kết'],
+    cons: ['Canary chỉ hiệu quả khi có giám sát và người rollback kịp', 'Blue/green gấp đôi tài nguyên và vẫn lộ 100% traffic cho bản lỗi', 'Cả hai cần hỗ trợ hai phiên bản chạy song song (schema, API tương thích)', 'Big bang rẻ nhất nhưng blast radius lớn nhất'],
+    real: 'Netflix dùng Kayenta để tự động so sánh metric của canary với baseline trước khi promote; AWS CodeDeploy và Argo Rollouts hỗ trợ cả canary lẫn blue/green với rollback tự động theo alarm.',
+    tryIt: 'Đặt Canary ở một App trong vùng sáng, deploy vài lần và nhìn "canary lỗi X%" trong inspector; rollback khi lỗi, rồi để yên một lần để xem bản lỗi tự lên 100%. Sau đó thử Blue/green và so thời gian lỗi trong post-mortem.',
+    see: ['concept-blast-radius', 'inc-baddeploy', 'concept-observability', 'comp-app', 'comp-k8s', 'comp-docker'],
     symptoms: [], mitigations: []
   }
 ];
