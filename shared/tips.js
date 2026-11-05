@@ -38,6 +38,16 @@ const TIPS = [
     codex: ['comp-cdn'], kind: 'warn',
   },
   {
+    id: 'k8snocont', when: (w) => [...w.structs].some((s) => s.k === 'k8s' && s.links.some((id) => { const a = w.ents.get(id); return a && a.k === 'app' && !a.cont; })),
+    msg: 'Kubernetes chỉ tự chữa, autoscale và rollback được App đã đóng container. Lắp Module Docker (chế ở Phòng lab) vào các App sau cụm; App chưa đóng container chỉ được chia tải.',
+    codex: ['comp-k8s', 'comp-docker'], kind: 'warn',
+  },
+  {
+    id: 's3orphan', when: (w) => [...w.structs].some((s) => s.k === 's3' && ![...w.structs].some((o) => o.links && o.links.includes(s.id))),
+    msg: 'Object Storage chưa có ai trỏ tới. Nối Gateway hoặc CDN → S3 để phục vụ request tĩnh, và/hoặc DB → S3 để có backup.',
+    codex: ['comp-s3'],
+  },
+  {
     id: 'tail', when: (w) => { const g = w.flow.g; return g && w.flow.view && w.flow.view.g.detail && g.p99 > 600 && g.p99 > 3 * g.p50 && g.ok > 0.5; },
     msg: 'p99 cao hơn nhiều so với p50: một số ít request rất chậm. Trung bình không kể hết câu chuyện — hãy theo dõi p99.',
     codex: ['concept-tail-latency', 'concept-slo'],
@@ -58,9 +68,9 @@ const TIPS = [
     codex: ['comp-db', 'concept-capacity-cost'], kind: 'warn',
   },
   {
-    id: 'nobackup', when: (w) => w.clock.day >= 4 && [...w.structs].some((s) => s.k === 'db' && s.cfg.backup === 'off'),
-    msg: 'DB chưa bật Backup. Replica KHÔNG phải backup: lệnh xoá nhầm hay dữ liệu hỏng được sao chép sang mọi bản sao ngay lập tức. Mở DB → Cấu hình → Backup để có điểm quay về (đổi lại tốn đĩa và IO).',
-    codex: ['concept-backup'], kind: 'warn',
+    id: 'nobackup', when: (w) => w.clock.day >= 4 && [...w.structs].some((s) => s.k === 'db' && s.cfg.backup === 'off' && !(s._st && s._st.backupOn)),
+    msg: 'DB chưa có backup nào. Replica KHÔNG phải backup: lệnh xoá nhầm hay dữ liệu hỏng được sao chép sang mọi bản sao ngay lập tức. Mở DB → Cấu hình → Backup, hoặc nối DB → Object Storage (S3), để có điểm quay về (đổi lại tốn đĩa và IO).',
+    codex: ['concept-backup', 'comp-s3'], kind: 'warn',
   },
   {
     id: 'queuelag', when: (w) => { const v = w.flow.view; return v && Object.values(v.n).some((m) => m.lag > 10 && m.q > 200); },

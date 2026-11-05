@@ -360,6 +360,7 @@ function drawItemGlyph(ctx, id) {
       break;
     }
     case 'waf_module': moduleCard(ctx, 'shield'); break;
+    case 'docker_module': moduleCard(ctx, 'whale'); break;
     case 'asg_module': moduleCard(ctx, 'arrows'); break;
     default: {
       rect(ctx, -12, -12, 24, 24, '#6a6a70', 3, 2.4);
@@ -394,6 +395,9 @@ function moduleCard(ctx, sym) {
   if (sym === 'shield') {
     ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(7, -3); ctx.quadraticCurveTo(7, 6, 0, 10); ctx.quadraticCurveTo(-7, 6, -7, -3); ctx.closePath(); fs(ctx, '#58d6e0', 1.8);
     line(ctx, 0, -2, 0, 5, '#0c3a40', 1.6);
+  } else if (sym === 'whale') {
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 3 - r; c++) rect(ctx, -7 + c * 5 + r * 2.5, -1 - r * 4.5, 4.4, 4, '#58b6d0', 1, 1.2);
+    ctx.beginPath(); ctx.moveTo(-8, 4); ctx.lineTo(8, 4); ctx.quadraticCurveTo(7, 10, -1, 10); ctx.quadraticCurveTo(-7, 9, -8, 4); ctx.closePath(); fs(ctx, '#2b8ad6', 1.6);
   } else {
     for (const y of [-4, 3]) { ctx.beginPath(); ctx.moveTo(-6, y + 4); ctx.lineTo(0, y - 2); ctx.lineTo(6, y + 4); ctx.lineWidth = 3; ctx.stroke(); ctx.strokeStyle = '#7ee8a0'; ctx.lineWidth = 1.6; ctx.stroke(); ctx.strokeStyle = INK; }
   }
@@ -448,7 +452,7 @@ function drawHud(ctx, key) {
 
 // ------------------------------------------------------------- structures --
 const UNPOWERED = new Set(['generator', 'whiteboard', 'archlab', 'chaoslab', 'stove', 'chest', 'runbook']);
-const TOP = { gateway: -68, cdn: -44, lb: -30, app: -32, cache: -30, queue: -26, db: -34, replica: -34, generator: -52, lantern: -52, turret: -36, whiteboard: -34, archlab: -46, chaoslab: -54, stove: -34, chest: -26, runbook: -32 };
+const TOP = { gateway: -68, cdn: -44, lb: -30, app: -32, cache: -30, queue: -26, db: -34, replica: -34, s3: -30, k8s: -46, generator: -52, lantern: -52, turret: -36, whiteboard: -34, archlab: -46, chaoslab: -54, stove: -34, chest: -26, runbook: -32 };
 
 function setStructState(e, k) {
   S.tier = e.tier || 1;
@@ -570,6 +574,11 @@ function drawApp(ctx, e) {
     appShell(ctx, e, false); ctx.restore();
   }
   appShell(ctx, e, true);
+  if (e.cont) {
+    rect(ctx, -22, 8, 14, 11, C('#2b8ad6'), 2, 2);
+    for (const x of [-20, -16, -12]) line(ctx, x, 10, x, 17, 'rgba(255,255,255,.7)', 1);
+    line(ctx, -22, 13, -8, 13, INK, 1);
+  }
   if (e.bad && S.on) {
     ctx.fillStyle = '#8fc43a';
     for (const x of [-9, 4]) { ctx.beginPath(); ctx.ellipse(x, -7 + Math.sin(S.t * 2 + x) * 1.5, 2, 4, 0, 0, TAU); ctx.fill(); ctx.stroke(); }
@@ -776,6 +785,40 @@ function drawChaoslab(ctx, e) {
   poly(ctx, [24, -2, 32, -2, 28, -10], '#e8c23a', 1.8, 0.2); line(ctx, 28, -8, 28, -5, INK, 1.4);
 }
 
+function drawS3(ctx, e) {
+  const t = S.t, up = S.on && !S.crashed;
+  ctx.beginPath(); ctx.moveTo(-17, -10); ctx.lineTo(-17, 18); ctx.ellipse(0, 18, 17, 6, 0, Math.PI, 0, true); ctx.lineTo(17, -10); ctx.closePath(); fs(ctx, C('#c9532e'), 2.6);
+  ctx.beginPath(); ctx.moveTo(-17, 4); ctx.ellipse(0, 4, 17, 6, 0, Math.PI, 0, true); ctx.lineWidth = 1.6; ctx.stroke();
+  ell(ctx, 0, -10, 17, 6, C('#7a3320'), 2.6);
+  const bob = up ? Math.sin(t * 2 + sd) * 0.8 : 0;
+  rect(ctx, -9, -17 + bob, 8, 7, C('#e8c23a'), 1.5, 1.8);
+  rect(ctx, 1, -15 - bob, 8, 7, C('#58b6d0'), 1.5, 1.8);
+  rect(ctx, -4, -23 + bob * 0.5, 8, 7, C('#7ee8a0'), 1.5, 1.8);
+  line(ctx, -2, -20 + bob * 0.5, 2, -20 + bob * 0.5, INK, 1.2);
+  line(ctx, -7, -14 + bob, -3, -14 + bob, INK, 1.2);
+  rect(ctx, -9, 8, 18, 6, C('#2e3036'), 1.5, 1.6);
+  led(ctx, -5, 11, 1.7, '#7ee8a0', 0); led(ctx, 0, 11, 1.7, '#ffb43a', 1);
+  if (up) { const ph = (t * 0.6) % 1; ctx.globalAlpha = 1 - ph; rect(ctx, 5 + ph * 8, -24 - ph * 8, 5, 5, '#e8c23a', 1, 1.4); ctx.globalAlpha = 1; }
+}
+
+function drawK8s(ctx, e) {
+  const t = S.t, up = S.on && !S.crashed;
+  const w = e.w || 2, hw = w * 24;
+  rect(ctx, -hw + 6, 0, hw * 2 - 12, 24, C('#3a4a6a'), 4);
+  rect(ctx, -hw + 10, 4, hw * 2 - 20, 7, C('#1f2a40'), 2, 1.6);
+  led(ctx, -hw + 15, 7.5, 1.7, '#7ee8a0', 0); led(ctx, -hw + 21, 7.5, 1.7, '#58d6e0', 1);
+  for (let i = 0; i < 4; i++) {
+    const x = -hw + 12 + i * ((hw * 2 - 24) / 4);
+    rect(ctx, x, 14, 11, 7, C(['#326ce5', '#5b8def', '#326ce5', '#5b8def'][i]), 1.5, 1.6);
+  }
+  ell(ctx, 0, -17, 20, 20, C('#326ce5'), 2.6);
+  ctx.save(); ctx.translate(0, -17); ctx.rotate(up ? t * 0.35 + sd : 0);
+  for (let i = 0; i < 7; i++) { const a = i / 7 * TAU; line(ctx, 0, 0, Math.cos(a) * 17, Math.sin(a) * 17, '#ffffff', 2.2); ell(ctx, Math.cos(a) * 17, Math.sin(a) * 17, 2.6, 2.6, C('#ffffff'), 1.4); }
+  ctx.restore();
+  ell(ctx, 0, -17, 5, 5, C('#ffffff'), 2);
+  if (up) glow(ctx, 0, -17, 30, '#5b8def', 0.35);
+}
+
 function drawStove(ctx, e) {
   const t = S.t, cooking = !!e.cooking && !e.done;
   for (const x of [-12, 0, 12]) line(ctx, x * 0.8, 8, x * 1.1, 22, INK, 4.4);
@@ -835,7 +878,7 @@ function drawRunbook(ctx, e) {
   ctx.beginPath(); ctx.moveTo(9, -16); ctx.lineTo(12, -12); ctx.lineTo(17, -20); ctx.lineWidth = 2.6; ctx.strokeStyle = '#7ee8a0'; ctx.stroke(); ctx.strokeStyle = INK;
 }
 
-const STRUCT_DRAW = { gateway: drawGateway, cdn: drawCdn, lb: drawLb, app: drawApp, cache: drawCache, queue: drawQueue, db: drawDb, replica: drawReplica, generator: drawGenerator, lantern: drawLantern, turret: drawTurret, whiteboard: drawWhiteboard, archlab: drawArchlab, chaoslab: drawChaoslab, stove: drawStove, chest: drawChest, runbook: drawRunbook };
+const STRUCT_DRAW = { gateway: drawGateway, cdn: drawCdn, lb: drawLb, app: drawApp, cache: drawCache, queue: drawQueue, db: drawDb, replica: drawReplica, s3: drawS3, k8s: drawK8s, generator: drawGenerator, lantern: drawLantern, turret: drawTurret, whiteboard: drawWhiteboard, archlab: drawArchlab, chaoslab: drawChaoslab, stove: drawStove, chest: drawChest, runbook: drawRunbook };
 
 function structOverlays(ctx, e, k, info) {
   const t = S.t, w = e.w || STRUCTS[k].w, h = e.h || STRUCTS[k].h;
@@ -1235,6 +1278,7 @@ export function zOf(e) {
 export function drawEntity(ctx, e, o) {
   o = o || {};
   const x = e.rx ?? e.x, y = e.ry ?? e.y, k = e.k;
+  if (k === 'app' && e.bad && !o.info) e = { ...e, bad: false }; // bản lỗi (kể cả canary) chỉ lộ ra khi App nằm trong vùng giám sát
   S.t = o.t || 0;
   S.gk = 0.75 + 0.6 * (o.dark || 0);
   sd = seedOf(e.id === undefined ? 1 : e.id);

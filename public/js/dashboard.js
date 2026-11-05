@@ -6,8 +6,8 @@ import { Inspector } from './inspector.js';
 
 let root, open = false, sig = '', lastTk = -2, lastHist = -1, lastLog = -1, nodes = new Map();
 const W = 900, H = 430, NW = 122, NH = 74;
-const SHORT = { gateway: 'Gateway', cdn: 'CDN', lb: 'LB', app: 'App', cache: 'Cache', queue: 'Queue', db: 'DB', replica: 'Replica' };
-const LAYER_NAME = ['Cổng vào', 'Edge (CDN)', 'Cân bằng tải', 'Ứng dụng', 'Cache / Queue', 'Dữ liệu', 'Replica'];
+const SHORT = { gateway: 'Gateway', cdn: 'CDN', lb: 'LB', k8s: 'K8s', app: 'App', cache: 'Cache', queue: 'Queue', s3: 'S3', db: 'DB', replica: 'Replica' };
+const LAYER_NAME = ['Cổng vào', 'Edge (CDN)', 'LB / Kubernetes', 'Ứng dụng', 'Cache / Queue / S3', 'Dữ liệu', 'Replica'];
 
 export const Dashboard = {
   init() {
@@ -156,6 +156,7 @@ function paint(comps) {
       if (c.k === 'cache') txt += ` · hit ${Math.round(m.hit * 100)}%`;
       if (c.k === 'queue') txt = `${m.q} msg · lag ${m.lag}s`;
       if (c.k === 'db') txt += ` · đĩa ${Math.round(m.disk * 100)}%`;
+      if (c.k === 'k8s') txt += ` · ${m.pods} pod`;
     }
     if (G.selected === id) cls += ' sel';
     if (sys && sys.al && sys.al.list.some((a) => a.node === id && a.st === 'firing')) cls += ' paging';

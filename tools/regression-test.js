@@ -459,3 +459,317 @@ run('a save from before alerting loads with the lantern on the default alert lev
   for (let i = 0; i < 2 / DT; i++) w.step(DT);
   assert.ok([...w.structs].filter((s) => s.k === 'lantern').every((l) => l.cfg.alert === 'normal'));
 });
+
+// ---------- Object Storage / Docker / Kubernetes ----------
+function rig() {
+  const room = new Room({ seed: 77 });
+  const w = room.world;
+  const p = room.join({ send() {} }, { name: 'T', token: 'a' });
+  const S = (k) => [...w.structs].filter((s) => s.k === k);
+  w.addStruct('generator', 47, 45);
+  w.addStruct('lantern', 45, 38);
+  w.addStruct('lantern', 49, 41);
+  w.users = 40;
+  const run = (s) => { for (let i = 0; i < s / DT; i++) { w.step(DT); for (const g of S('generator')) g.fuel = 200; room.snapshot(false); } };
+  return { room, w, p, S, run, gw: S('gateway')[0], app: S('app')[0], db: S('db')[0] };
+}
+
+run('new component links follow the architecture rules', () => {
+  assert.ok(canLink('gateway', 's3') && canLink('cdn', 's3') && canLink('db', 's3'));
+  assert.ok(canLink('gateway', 'k8s') && canLink('cdn', 'k8s') && canLink('k8s', 'app'));
+  assert.equal(canLink('s3', 'app'), false);
+  assert.equal(canLink('app', 'k8s'), false);
+});
+
+run('S3 serves the static class instead of the App, and the gateway falls back when S3 dies', () => {
+  const { w, S, run, gw, app } = rig();
+  const s3 = w.addStruct('s3', 46, 44);
+  gw.links = [s3.id, app.id];
+  run(10);
+  assert.ok(w.flow.ctx.get(s3.id).in[0] > 0, 'S3 receives static traffic');
+  assert.equal(w.flow.ctx.get(app.id).in[0], 0, 'App receives no static traffic');
+  w.crash(s3, 'zap'); run(6);
+  assert.ok(w.flow.ctx.get(app.id).in[0] > 0, 'static falls back to the App after the health check');
+});
+
+run('DB linked to S3 takes periodic backups; without S3 there are none', () => {
+  const { w, run, db } = rig();
+  run(40);
+  assert.equal(db._st.lastBackup, -1, 'no backup target, no backup');
+  const unbacked = db._st.sinceBackup;
+  assert.ok(unbacked > 0, 'writes accumulate un-backed-up');
+  const s3 = w.addStruct('s3', 46, 44);
+  db.links = [s3.id];
+  run(35);
+  assert.ok(db._st.lastBackup > 0, 'snapshot taken');
+  assert.ok(db._st.sinceBackup < unbacked, 'un-backed-up window reset by the snapshot');
+});
+
+run('Module Docker containerizes an App and halves its reboot time', () => {
+  const { w, p, app } = rig();
+  p.x = app.x; p.y = app.y;
+  w.give(p, 'docker_module', 1);
+  w.c_install(p, { id: app.id });
+  assert.equal(app.cont, true);
+  assert.equal(w.invCount(p.inv, 'docker_module'), 0, 'module consumed');
+  app.rb = false;
+  w.startReboot(app, 10);
+  assert.equal(Math.round(app._rbAt - w.time), 5);
+});
+
+run('Kubernetes restarts a crashed containerized App but not a plain one', () => {
+  const { w, S, run, gw, app } = rig();
+  const app2 = w.addStruct('app', 45, 41);
+  app2.links = [...app.links];
+  const k8s = w.addStruct('k8s', 41, 43);
+  k8s.links = [app.id, app2.id];
+  gw.links = [k8s.id];
+  app.cont = true;
+  run(10);
+  w.crash(app, 'zap'); w.crash(app2, 'zap');
+  run(4);
+  assert.equal(app.crashed, true, 'not healed before the restart delay');
+  run(8);
+  assert.equal(app.crashed, false, 'containerized App healed');
+  assert.equal(w.flow.up(app), true, 'and serving again');
+  assert.equal(app2.crashed, true, 'plain App is not managed');
+  assert.ok(S('k8s')[0]._st.heals >= 1);
+});
+
+run('Kubernetes rolls back a bad deploy of a containerized App after the readiness probe fails', () => {
+  const { w, run, gw, app } = rig();
+  const k8s = w.addStruct('k8s', 41, 43);
+  k8s.links = [app.id];
+  gw.links = [k8s.id];
+  app.cont = true; app.ver = 2;
+  run(5);
+  app.bad = true;
+  run(6);
+  assert.equal(app.bad, true, 'still bad before the probe window ends');
+  run(8);
+  assert.equal(app.bad, false, 'rolled back');
+  assert.equal(app.ver, 1);
+});
+
+// ---------- Backup: cfg.backup và cáp S3 cùng tồn tại ----------
+function s3Db(backup) {
+  const t = dbWorld({ backup });
+  const s3 = t.w.addStruct('s3', 46, 44);
+  t.db.links = [s3.id];
+  return t;
+}
+
+run('an S3 snapshot is a restore point even with Backup off: the card shows its age and restore works', () => {
+  const t = s3Db('off');
+  t.run(40);
+  assert.equal(typeof t.m().snapAge, 'number', 'snapshot age shown');
+  assert.ok(t.m().snapAge <= 30);
+  t.w.director.create('dataloss', {});
+  t.run(8);
+  assert.deepEqual(t.active(), ['dataloss']);
+  const atRisk = t.m().rpo, lostBefore = t.w.director.lostTotal;
+  t.w.c_restore(t.p, { id: t.db.id });
+  t.run(1);
+  assert.deepEqual(t.active(), [], 'restore ended the incident');
+  const lost = t.w.director.lostTotal - lostBefore;
+  assert.ok(lost > 0 && Math.abs(lost - atRisk) <= 1, `lost ${lost}, at risk ${atRisk}`);
+  const pm = t.w.log.at(-1);
+  assert.ok(pm.checks.find((c) => c.t === 'Backup bật trước sự cố').ok, 'post-mortem credits the S3 backup');
+});
+
+run('turning Backup off keeps the S3 snapshot, while a DB with neither has none', () => {
+  const t = s3Db('hourly');
+  t.run(40);
+  t.w.c_config(t.p, { id: t.db.id, key: 'backup', val: 'off' });
+  t.run(2);
+  assert.equal(typeof t.m().snapAge, 'number', 'S3 snapshot survives');
+  assert.ok(t.m().rpo < 120);
+  const bare = dbWorld();
+  bare.run(40);
+  assert.equal(bare.m().snapAge, null);
+});
+
+run('S3 does not snapshot corrupt data, so the last clean snapshot stays the restore point', () => {
+  const t = s3Db('off');
+  t.run(40);
+  t.w.director.create('dataloss', {});
+  t.run(2);
+  const at = t.db._st.lastBackup;
+  t.run(40);
+  assert.equal(t.db._st.lastBackup, at);
+});
+
+// ---------- Chiến lược deploy (direct / canary / blue-green) ----------
+// Monolith Gateway -> App -> DB. deploy(true) ép bản lỗi, deploy(false) ép bản tốt; peak(s) là tỉ lệ lỗi toàn hệ thống lớn nhất trong s giây.
+function deployRig({ strategy = 'direct', role, lanterns = true } = {}) {
+  const t = rig();
+  t.w.director.nextAt = 1e9;
+  if (!lanterns) for (const l of t.S('lantern')) t.w.removeEnt(l);
+  t.app.cfg.deploy = strategy;
+  if (role) t.p.role = role;
+  t.p.x = t.app.x; t.p.y = t.app.y;
+  t.w.give(t.p, 'scrap', 10); t.w.give(t.p, 'copper', 10);
+  t.deploy = (bad) => { const rng = t.w.rng; t.w.rng = () => (bad ? 0 : 0.99); t.w.c_deploy(t.p, { id: t.app.id }); t.w.rng = rng; };
+  t.peak = (s) => { let m = 0; for (let i = 0; i < s / DT; i++) { t.run(DT); m = Math.max(m, t.w.flow.pfail); } return m; };
+  t.active = () => t.w.director.active.map((i) => i.id);
+  t.view = () => t.w.flow.view.n[t.app.id];
+  return t;
+}
+
+run('a bad canary hurts far fewer requests than a bad direct deploy on the same world', () => {
+  const afterReboot = (strategy) => { const t = deployRig({ strategy }); t.run(10); t.deploy(true); t.run(8); return t.peak(12); };
+  const direct = afterReboot('direct'), canary = afterReboot('canary');
+  assert.ok(direct > 0.3, `direct deploy fails a large share (${direct})`);
+  assert.ok(canary > 0 && canary < direct / 2, `canary exposes only its slice (${canary} vs ${direct})`);
+});
+
+run('rolling back during the canary window clears the bad version and ends the incident', () => {
+  const t = deployRig({ strategy: 'canary' });
+  t.run(10); t.deploy(true); t.run(8);
+  assert.ok(t.app.rollout && t.app.rollout.phase === 'canary', 'a rollout is in progress');
+  assert.deepEqual(t.active(), ['baddeploy']);
+  t.w.c_rollback(t.p, { id: t.app.id });
+  assert.equal(t.app.bad, false);
+  assert.ok(!t.app.rollout, 'rollout cleared');
+  t.run(6);
+  assert.ok(t.peak(10) < 0.02, 'errors are gone');
+  assert.deepEqual(t.active(), []);
+});
+
+run('an unattended canary auto-promotes after the window and the bad version then fails everything it serves', () => {
+  const t = deployRig({ strategy: 'canary' });
+  t.run(10); t.deploy(true); t.run(8);
+  assert.ok(t.peak(8) < 0.15, 'only the canary slice fails during the window');
+  t.run(20);
+  assert.ok(!t.app.rollout, 'window over, rollout finished');
+  assert.equal(t.app.bad, true, 'the bad version shipped to everyone');
+  assert.ok(t.peak(10) > 0.3, 'full error rate once promoted');
+  assert.deepEqual(t.active(), ['baddeploy']);
+});
+
+run('promoting early skips the rest of the window', () => {
+  const t = deployRig({ strategy: 'canary' });
+  t.run(10); t.deploy(true); t.run(8);
+  t.w.c_promote(t.p, { id: t.app.id });
+  assert.ok(!t.app.rollout);
+  assert.equal(t.app.bad, true);
+  t.run(2);
+  assert.ok(t.peak(8) > 0.3);
+});
+
+run('blue/green deploys without downtime, rollback is instant, and two versions cost extra power only while they run', () => {
+  const t = deployRig({ strategy: 'bluegreen' });
+  t.run(10);
+  const idle = t.w.compWatts(t.app);
+  t.deploy(false);
+  let down = false;
+  for (let i = 0; i < 10 / DT; i++) { t.run(DT); if (t.app.rb || !t.w.flow.up(t.app)) down = true; }
+  assert.equal(down, false, 'the App never went down');
+  assert.ok(t.w.compWatts(t.app) > idle, 'both versions draw power during the window');
+  t.run(20);
+  assert.equal(t.w.compWatts(t.app), idle, 'old environment decommissioned after the window');
+  const direct = deployRig({ strategy: 'direct' });
+  direct.run(10); direct.deploy(false);
+  assert.equal(direct.app.rb, true, 'direct deploy reboots the App');
+  const bad = deployRig({ strategy: 'bluegreen' });
+  bad.run(10); bad.deploy(true); bad.run(5);
+  assert.equal(bad.app.bad, true);
+  bad.w.c_rollback(bad.p, { id: bad.app.id });
+  assert.equal(bad.app.bad, false);
+  assert.equal(bad.app.rb, false, 'rollback needs no reboot');
+  assert.ok(bad.peak(6) < 0.02, 'traffic is back on the old version at once');
+});
+
+run('after the blue/green window the old environment is gone, so rollback needs a reboot again', () => {
+  const t = deployRig({ strategy: 'bluegreen' });
+  t.run(10); t.deploy(true); t.run(30);
+  assert.ok(!t.app.rollout);
+  t.w.c_rollback(t.p, { id: t.app.id });
+  assert.equal(t.app.rb, true);
+});
+
+run('save/load in the middle of a canary keeps the rollout and finishes it on schedule', () => {
+  const t = deployRig({ strategy: 'canary' });
+  t.run(10); t.deploy(true); t.run(8);
+  const rollout = JSON.parse(JSON.stringify(t.app.rollout));
+  assert.equal(rollout.phase, 'canary');
+  const b = new World(5, t.w.toSave());
+  const app = [...b.structs].find((s) => s.k === 'app');
+  assert.deepEqual(app.rollout, rollout);
+  assert.equal(app.bad, true);
+  let peak = 0;
+  for (let i = 0; i < 8 / DT; i++) { b.step(DT); peak = Math.max(peak, b.flow.pfail); }
+  assert.ok(peak > 0 && peak < 0.15, `still only the canary slice (${peak})`);
+  for (let i = 0; i < 20 / DT; i++) b.step(DT);
+  assert.ok(!app.rollout, 'finished after the saved deadline');
+  assert.equal(app.bad, true);
+  assert.ok(b.flow.pfail > 0.3, 'full exposure after promotion');
+});
+
+run('the canary error readout exists only for monitored Apps', () => {
+  const seen = deployRig({ strategy: 'canary' });
+  seen.run(10); seen.deploy(true); seen.run(8);
+  assert.ok(seen.view().ro.err > 0.3, 'the canary slice shows its own error rate');
+  assert.ok(seen.view().ro.share < 0.2);
+  const good = deployRig({ strategy: 'canary' });
+  good.run(10); good.deploy(false); good.run(8);
+  assert.equal(good.view().ro.err, 0, 'a healthy canary reads 0%');
+  const blind = deployRig({ strategy: 'canary', lanterns: false });
+  blind.run(10); blind.deploy(true); blind.run(8);
+  assert.equal(blind.view(), undefined, 'no lantern, no metrics at all');
+  assert.ok(blind.app.rollout, 'the rollout itself is still running');
+});
+
+run('a Kubernetes-managed container keeps the rolling update whatever strategy is configured', () => {
+  const t = deployRig({ strategy: 'bluegreen' });
+  const k8s = t.w.addStruct('k8s', 41, 43);
+  k8s.links = [t.app.id];
+  t.gw.links = [k8s.id];
+  t.app.cont = true;
+  t.run(10);
+  const scrap = t.w.invCount(t.p.inv, 'scrap');
+  t.deploy(true);
+  assert.ok(!t.app.rollout, 'no strategy rollout under Kubernetes');
+  assert.equal(t.app.rb, true, 'rolling update briefly restarts the pod');
+  assert.equal(t.w.invCount(t.p.inv, 'scrap'), scrap, 'strategy cost not charged');
+  t.run(15);
+  assert.equal(t.app.bad, false, 'Kubernetes rolled the bad version back by itself');
+});
+
+run('the strategy is a validated config and blue/green charges its cost', () => {
+  const t = deployRig();
+  t.w.c_config(t.p, { id: t.app.id, key: 'deploy', val: 'bogus' });
+  assert.equal(t.app.cfg.deploy, 'direct');
+  t.w.c_config(t.p, { id: t.app.id, key: 'deploy', val: 'bluegreen' });
+  assert.equal(t.app.cfg.deploy, 'bluegreen');
+  const need = t.w.invCount(t.p.inv, 'scrap');
+  t.deploy(false);
+  assert.ok(t.w.invCount(t.p.inv, 'scrap') < need, 'blue/green consumed ingredients');
+  t.app.rollout = null; t.run(1);
+  for (const k of ['scrap', 'copper', 'silicon']) t.w.invRemove(t.p.inv, k, 99);
+  const ver = t.app.ver;
+  t.deploy(false);
+  assert.equal(t.app.ver, ver, 'refused without ingredients');
+});
+
+run('Backend Dev keeps the 12% bad chance and the one-second rollback', () => {
+  const chance = (role) => { const t = deployRig({ role }); t.run(2); const rng = t.w.rng; t.w.rng = () => 0.2; t.w.c_deploy(t.p, { id: t.app.id }); t.w.rng = rng; return t; };
+  assert.equal(chance('backend').app.bad, false, '0.2 is above the 12% threshold');
+  assert.equal(chance(undefined).app.bad, true, '0.2 is below the 30% threshold');
+  const t = deployRig({ role: 'backend' });
+  t.run(2); t.deploy(true); t.app.rb = false;
+  t.w.c_rollback(t.p, { id: t.app.id });
+  assert.equal(Math.round(t.app._rbAt - t.w.time), 1);
+});
+
+run('the bad-deploy post-mortem names the strategy, the blast radius and recommends one after a direct deploy', () => {
+  const pmFor = (strategy, wait) => { const t = deployRig({ strategy }); t.run(10); t.deploy(true); t.run(wait); t.w.c_rollback(t.p, { id: t.app.id }); t.run(8); return t.w.log.at(-1); };
+  const strat = (pm) => pm.checks.find((c) => c.t.startsWith('Chiến lược deploy'));
+  const canary = pmFor('canary', 10), direct = pmFor('direct', 10);
+  assert.equal(canary.id, 'baddeploy');
+  assert.equal(strat(canary).ok, true, 'canary caught inside its window');
+  assert.equal(strat(direct).ok, false, 'direct deploy is flagged');
+  assert.ok(canary.impact.peakErr < direct.impact.peakErr, 'smaller blast radius');
+  const late = pmFor('canary', 30);
+  assert.equal(strat(late).ok, false, 'a canary rolled back only after promotion did not help');
+});
