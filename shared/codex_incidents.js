@@ -388,5 +388,25 @@ export const CODEX_INCIDENTS = [
     tryIt: 'Bật autoscaler và quan sát đợt tăng instance sau 15 s khi spike; thử thêm rate limit.',
     see: ['inc-spike', 'comp-lb', 'concept-scaling', 'concept-capacity-cost', 'concept-cold-start'],
     symptoms: [], mitigations: []
+  },
+  {
+    id: 'concept-alerting', cat: 'concept',
+    title: 'Alerting, on-call & alert fatigue',
+    summary: 'Cảnh báo tốt gọi đúng người, đúng lúc, về thứ đáng làm ngay; ngưỡng quá nhạy hay quá chặt đều làm hỏng điều đó.',
+    body: `<p>Một <b>alert</b> là quy tắc trên metric: "tỉ lệ lỗi ≥ 5% liên tục 6 giây thì page người on-call". Ba chỉ số đo chất lượng của cả chuỗi: <b>MTTD</b> (từ lúc lỗi bắt đầu tới lúc có alert), <b>MTTA</b> (từ alert tới lúc có người nhận/ack) và <b>MTTR</b> (tới lúc khôi phục). Alert chỉ rút ngắn được hai cái đầu; cái cuối là việc của runbook và tự động hoá.</p>
+<p><b>Nhạy hay chặt</b> là đánh đổi, không có đáp án đúng cho mọi hệ thống: ngưỡng thấp và <code>for</code> ngắn báo sớm, nhưng kêu cả khi chỉ là nhiễu thoáng qua (<b>báo động giả</b>); ngưỡng cao yên tĩnh, nhưng chỉ kêu khi <b>người dùng đã lỗi</b>. Báo động giả làm người trực mất ngủ và dạy cả đội phớt lờ pager (<b>alert fatigue</b>), đến khi một page thật bị bỏ qua.</p>
+<ul>
+<li><b>Triệu chứng và nguyên nhân</b>: alert theo triệu chứng (lỗi, p99: người dùng đang đau) ít nhiễu và luôn đáng hành động; alert theo nguyên nhân (utilization, đĩa) báo sớm hơn nhưng dễ kêu khi chưa có hại gì. Đừng page vì CPU 50%.</li>
+<li><b>SLO burn</b>: thay vì ngưỡng cố định, báo khi tốc độ đốt ngân sách lỗi đủ nhanh để vỡ SLO trước hạn.</li>
+<li><b>Dedup và gộp</b>: một điều kiện không được page lại mỗi giây, và nhiều quy tắc cùng vi phạm trên một node chỉ nên là một page.</li>
+<li><b>Escalation</b>: không ai ack trong thời hạn thì page cả đội; alert không có chủ chỉ là tiếng ồn.</li>
+<li>Trong game: chỉnh <b>Mức cảnh báo</b> ở Đèn giám sát (Tắt, Nhạy, Vừa, Chặt). Người on-call đổi mỗi ngày (hoặc nhận ca); ack bằng phím V trong 20 giây, quá hạn thì cả đội bị page và người trực mất tỉnh táo; mỗi page giả cũng tốn tỉnh táo. Component ngoài vùng đèn không có alert nào, post-mortem ghi MTTD, MTTA và số báo động giả.</li>
+</ul>`,
+    pros: ['Rút ngắn MTTD và MTTA, người dùng chịu lỗi ít hơn', 'Có chủ rõ ràng nhờ on-call và escalation', 'Ngưỡng theo triệu chứng ít nhiễu và dễ hành động'],
+    cons: ['Ngưỡng nhạy gây báo động giả và alert fatigue', 'Ngưỡng chặt phát hiện muộn, người dùng đã lỗi', 'Ngưỡng cố định lệch dần khi tải tăng nên cần chỉnh lại', 'On-call tốn sức người và tỉnh táo'],
+    real: 'Google SRE Workbook (chương "Alerting on SLOs") khuyên cảnh báo theo tốc độ đốt error budget nhiều cửa sổ thời gian thay vì ngưỡng đơn giản; PagerDuty và Opsgenie chuẩn hoá luồng on-call, ack và escalation.',
+    tryIt: 'Đặt Mức cảnh báo ở Đèn giám sát là Nhạy rồi để yên một lúc để đếm báo động giả; sau đó đặt Chặt và gây crash trong Chaos Lab để so MTTD trong post-mortem.',
+    see: ['concept-observability', 'comp-lantern', 'concept-slo', 'concept-postmortem', 'inc-spike'],
+    symptoms: [], mitigations: []
   }
 ];
