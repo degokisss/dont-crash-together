@@ -38,7 +38,8 @@ npm start            # http://localhost:3000   (đổi cổng: node server/index
 | Round-robin / least-conn / hash; retry, backoff, circuit breaker | Cân bằng tải, retry storm, fail fast |
 | Cache TTL, jitter, coalescing | Stampede, cold start, staleness vs hit ratio |
 | DB sync/async, failover tự động/quorum, partition | CAP, split-brain, RPO |
-| 11 loại sự cố + post-mortem dựa trên kiến trúc thật | Pattern thất bại và cách giảm blast radius |
+| Backup định kỳ + khôi phục khi dữ liệu bị xoá nhầm (DB → Cấu hình → Backup) | RPO/RTO, replica không phải backup, chi phí đĩa/IO của snapshot |
+| 12 loại sự cố + post-mortem dựa trên kiến trúc thật | Pattern thất bại và cách giảm blast radius |
 | Chaos Lab | Chaos engineering / game day |
 
 ## Cấu trúc mã
@@ -51,7 +52,7 @@ shared/            lõi mô phỏng thuần (chạy y hệt trong Node và Web W
   incidents.js     director sự cố + chẩn đoán post-mortem
   mobs.js tips.js  AI quái, cố vấn theo ngữ cảnh
   room.js          phòng: nhận input, mô phỏng 20 Hz, broadcast delta snapshot
-  codex_*.js       nội dung Field Guide (48 mục)
+  codex_*.js       nội dung Field Guide (50 mục)
 server/index.js    HTTP tĩnh + WebSocket + lưu thế giới
 public/            client canvas 2D + HUD (render.js, art.js procedural, hud/inspector/dashboard/codexui)
 tools/             sim-test.js, incident-test.js, db-test.js (headless), art-preview.html
@@ -63,7 +64,7 @@ Kiến trúc mạng (cũng là một bài học): client chỉ gửi **input/l�
 
 ```bash
 node tools/sim-test.js 600 idle      # chạy 600 giây thế giới, in chỉ số mỗi 30s
-npm test                             # hồi quy: token/lệnh độc hại không làm sập tick, save/load giữ bản đồ
+npm test                             # hồi quy: token/lệnh độc hại không làm sập tick, save/load giữ bản đồ, backup/khôi phục
 node tools/incident-test.js          # dựng kiến trúc đầy đủ, kích hoạt từng sự cố + post-mortem
 node tools/db-test.js                # failover / split-brain / quorum / sync
 DCT_DEBUG=1 npm start                # bật lệnh debug (give/kit/build/inc...) để thử nhanh
