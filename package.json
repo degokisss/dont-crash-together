@@ -6,7 +6,8 @@
   "private": true,
   "scripts": {
     "start": "node server/index.js",
-    "sim": "node tools/sim-test.js"
+    "sim": "node tools/sim-test.js",
+    "test": "node tools/regression-test.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

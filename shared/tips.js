@@ -58,6 +58,11 @@ const TIPS = [
     codex: ['comp-db', 'concept-capacity-cost'], kind: 'warn',
   },
   {
+    id: 'nobackup', when: (w) => w.clock.day >= 4 && [...w.structs].some((s) => s.k === 'db' && s.cfg.backup === 'off'),
+    msg: 'DB chưa bật Backup. Replica KHÔNG phải backup: lệnh xoá nhầm hay dữ liệu hỏng được sao chép sang mọi bản sao ngay lập tức. Mở DB → Cấu hình → Backup để có điểm quay về (đổi lại tốn đĩa và IO).',
+    codex: ['concept-backup'], kind: 'warn',
+  },
+  {
     id: 'queuelag', when: (w) => { const v = w.flow.view; return v && Object.values(v.n).some((m) => m.lag > 10 && m.q > 200); },
     msg: 'Hàng đợi tích backlog: producer nhanh hơn consumer. Đây là backpressure — dữ liệu ghi bị trễ (eventual consistency) và có thể tràn buffer.',
     codex: ['comp-queue', 'concept-backpressure'],

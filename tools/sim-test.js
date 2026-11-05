@@ -26,6 +26,7 @@ const steps = Math.round(secs / DT);
 for (let i = 0; i < steps; i++) {
   w.step(DT);
   room.snapshot(false);
+  room.stats.ticks++;
   if (scenario !== 'idle' && i === 20) scenarioInit();
   if (w.time >= nextLog) {
     nextLog += 30;

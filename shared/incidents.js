@@ -1,6 +1,6 @@
 // Incident Director: lên lịch sự cố, áp hiệu ứng lên mô phỏng, đo tác động và sinh post-mortem
 // dựa trên kiến trúc THẬT của người chơi tại thời điểm sự cố.
-import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H, KP_PERFECT_BONUS } from './data.js';
+import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H, KP_PERFECT_BONUS, BACKUP } from './data.js';
 import { clamp, dist, weightedPick, round1 } from './util.js';
 import { spawnMob } from './mobs.js';
 import { BASE_TX, BASE_TY } from './worldgen.js';
@@ -26,6 +26,7 @@ export function archFacts(w) {
     jitter: caches.length > 0 && caches.every((c) => c.cfg.jitter), coalesce: caches.some((c) => c.cfg.coalesce),
     shards: Math.max(1, ...dbs.map((d) => d.shards)), salt: dbs.some((d) => d.cfg.salt), retention: dbs.some((d) => d.cfg.retention),
     failover: dbs[0] ? dbs[0].cfg.failover : 'off', repl: dbs[0] ? dbs[0].cfg.repl : 'async',
+    backup: dbs.some((d) => d.cfg.backup !== 'off'), backupMode: dbs[0] ? dbs[0].cfg.backup : 'off',
     monitored: comps.length ? mon.length / comps.length : 1, comps: comps.length,
     maxTier: Math.max(1, ...comps.map((c) => c.tier)),
   };
@@ -381,6 +382,47 @@ export const INCIDENTS = {
     concepts: ['comp-replica', 'concept-capacity-cost'],
     lesson: 'OLTP và OLAP không nên chung một chỗ. Cô lập workload nặng để bảo vệ đường dẫn của người dùng.',
   },
+
+  dataloss: {
+    name: 'Xóa nhầm dữ liệu (DROP TABLE)', minDay: 6,
+    weight: () => 1.2,
+    can: (w, f) => f.dbs > 0,
+    start(w, inc) {
+      const dbs = [...w.structs].filter((s) => s.k === 'db' && s.on && !s.crashed);
+      const db = dbs[Math.floor(w.rng() * dbs.length)];
+      if (!db) return false;
+      const st = w.flow.st(db);
+      st.corrupt = { at: w.time };
+      st.snapUntil = 0; // snapshot đang chạy sẽ chép luôn dữ liệu hỏng nên bị huỷ
+      inc.target = db.id;
+      inc.kind = 'db';
+      inc.backup = db.cfg.backup;
+      inc.snapAge = w.flow.hasSnapshot(db) ? Math.round(w.time - st.lastBackupAt) : null;
+      if (w.isMonitored(db.x, db.y)) w.say('Ai đó vừa chạy DROP TABLE nhầm trên production! Dữ liệu hỏng đã được sao chép sang cả replica.', 'bad');
+      return true;
+    },
+    done(w, inc) { const db = w.ents.get(inc.target); return !db || !w.flow.st(db).corrupt; },
+    end(w, inc) { inc.fixedAt = w.time; },
+    visible: (w, inc) => { const t = w.ents.get(inc.target); return t && w.isMonitored(t.x, t.y); },
+    diag(w, inc, f, A) {
+      const b = BACKUP[inc.backup];
+      const on = inc.backup !== 'off';
+      const fresh = inc.snapAge !== null && inc.snapAge <= BACKUP.hourly.every;
+      const rto = Math.round((inc.restoredAt ?? inc.fixedAt ?? w.time) - inc.t0);
+      const restored = inc.restoredAt !== undefined && !inc.rebuilt;
+      const arr = [
+        { ok: on, t: 'Backup bật trước sự cố', d: on ? `Backup ${b.name.toLowerCase()} (snapshot mỗi ${b.every}s).` : 'Backup đang tắt: không có điểm nào để quay về. Phải bật Backup ở DB TRƯỚC khi sự cố xảy ra.' },
+        { ok: fresh, t: 'Snapshot đủ mới (RPO)', d: inc.snapAge === null ? 'Lúc sự cố chưa có snapshot nào: mọi ghi từ trước tới giờ đều không được bảo vệ.' : fresh ? `Snapshot cuối cách sự cố ${inc.snapAge}s: chỉ mất các ghi rất gần đây.` : `Snapshot cuối đã cũ ${inc.snapAge}s: mọi ghi từ đó tới lúc khôi phục đều mất. Rút ngắn chu kỳ backup (đổi lại tốn đĩa và IO).` },
+        { ok: restored && rto <= 45, t: `Khôi phục (RTO ${rto}s)`, d: restored ? (rto <= 45 ? `Khôi phục từ snapshot sau ${rto}s, mất ~${inc.lost} bản ghi.` : `Khôi phục sau ${rto}s là chậm: lỗi người dùng kéo dài và mất thêm bản ghi trong lúc chờ.`) : inc.rebuilt ? `Không có snapshot để khôi phục: sau ${rto}s cả đội phải dựng lại dữ liệu từ đầu, mất ~${inc.lost} bản ghi.` : 'DB không còn nữa nên không khôi phục được.' },
+      ];
+      if (f.replicas > 0) arr.push({ ok: on, t: 'Replica không phải backup', d: on ? 'Có replica nhưng bạn không dựa vào nó: lỗi xoá nhầm đã được sao chép sang mọi replica ngay, chính snapshot mới cứu được dữ liệu.' : `Có ${f.replicas} replica nhưng không có backup: lỗi xoá nhầm bị sao chép sang mọi replica ngay lập tức, failover không giúp gì.` });
+      arr.push({ ok: inc.wasMonitored, t: 'Giám sát phát hiện', d: inc.wasMonitored ? 'Bạn thấy DB báo dữ liệu hỏng và lỗi tăng ngay.' : 'DB nằm ngoài vùng giám sát: dữ liệu hỏng trong im lặng cho tới khi khách hàng phàn nàn.' });
+      if (on) arr.push({ ok: A.peakDisk < 0.85, t: 'Chi phí đĩa của backup', d: A.peakDisk < 0.85 ? `Mỗi snapshot chiếm ~${(b.disk * 100).toFixed(1)}% đĩa (DB tier 1), đĩa đỉnh ${pct(A.peakDisk)}: chi phí chấp nhận được.` : `Đĩa đỉnh ${pct(A.peakDisk)}: snapshot ăn dần dung lượng. Bật Retention hoặc giãn chu kỳ backup.` });
+      return arr;
+    },
+    concepts: ['concept-backup', 'concept-durability'],
+    lesson: 'Replica không phải backup: nó sao chép cả lỗi. RPO là tuổi của snapshot cuối, RTO là thời gian khôi phục; cả hai phải được thiết kế trước khi sự cố xảy ra.',
+  },
 };
 
 const ORDER = Object.keys(INCIDENTS).filter((k) => INCIDENTS[k].weight() !== 0 || k === 'ddos');
@@ -410,6 +452,7 @@ export class Director {
     if (def.start(w, inc, f) === false) { this.active = this.active.filter((x) => x !== inc); return null; }
     const t = inc.target ? w.ents.get(inc.target) : null;
     inc.wasMonitored = t ? w.isMonitored(t.x, t.y) : f.monitored > 0.5;
+    inc.alert = w.alerts.snapshot(t);
     if (drill) this.mods.drill = true;
     w.unlock('inc-' + id);
     const vis = def.visible ? def.visible(w, inc) : true;
@@ -464,7 +507,7 @@ export class Director {
       s.peakDisk = Math.max(s.peakDisk, disk);
       if (disk >= 1) s.diskFull = true;
       s.minSat = Math.min(s.minSat, w.sat);
-      if (success < SLO.success || p99 > SLO.p99) s.badSec += 0.5;
+      if (success < SLO.success || p99 > SLO.p99) { s.badSec += 0.5; s.badAt ??= w.time; }
       // sự cố âm thầm: thông báo khi khách hàng bắt đầu phàn nàn
       if (!inc.announced && w.sat < 85 && !inc.drill) {
         inc.announced = true;
@@ -484,11 +527,16 @@ export class Director {
     const A = { ...inc.stats };
     const dur = w.time - inc.t0;
     const checks = def.diag(w, inc, inc.facts, A);
+    checks.push(...w.alerts.postmortem(inc));
     // dùng facts hiện tại cho các cấu hình có thể thay đổi giữa sự cố (jitter,...)? Dùng facts lúc bắt đầu: đó là kiến trúc thật khi sự cố xảy ra.
     const pm = {
       uid: inc.uid, id: inc.id, name: inc.name, day: inc.day, drill: inc.drill, dur: Math.round(dur),
-      impact: { peakErr: Math.round(A.peakErr * 100), peakP99: Math.round(A.peakP99), badSec: Math.round(A.badSec), minSat: Math.round(A.minSat), users: Math.round(w.users - A.usersStart), lost: inc.lost || 0 },
-      checks, lesson: def.lesson, concepts: def.concepts, codex: ['inc-' + inc.id, ...def.concepts],
+      impact: {
+        peakErr: Math.round(A.peakErr * 100), peakP99: Math.round(A.peakP99), badSec: Math.round(A.badSec), minSat: Math.round(A.minSat), users: Math.round(w.users - A.usersStart), lost: inc.lost || 0,
+        mttd: inc.detectedAt === undefined ? null : Math.round(inc.detectedAt - inc.t0),
+        mtta: inc.ackedAt === undefined ? null : Math.round(inc.ackedAt - inc.detectedAt),
+      },
+      checks, lesson: def.lesson, concepts: def.concepts, codex: ['inc-' + inc.id, ...def.concepts, 'concept-alerting'],
     };
     const okN = checks.filter((c) => c.ok).length;
     let kp = okN + (okN === checks.length && checks.length ? KP_PERFECT_BONUS : 0);
@@ -507,7 +555,7 @@ export class Director {
     const w = this.w;
     const def = INCIDENTS[id];
     if (!def || !w.codex.has('inc-' + id)) return w.say('Chỉ có thể diễn tập sự cố bạn đã từng gặp.', 'warn', p.pid);
-    if (this.active.length >= 2) return w.say('Đang có quá nhiều sự cố.', 'warn', p.pid);
+    if (this.active.length >= 2 || this.active.some((a) => a.id === id)) return w.say('Đang có quá nhiều sự cố.', 'warn', p.pid);
     const f = archFacts(w);
     if (id === 'baddeploy') {
       const app = [...w.structs].find((s) => s.k === 'app' && s.on);
@@ -558,6 +606,16 @@ export class Director {
     for (const i of this.active) if (i.id === 'partition') i.lostConflict = lost;
     this.lostTotal += lost;
     this.penalize(lost);
+  }
+  onRestore(db, lost, rebuilt = false) {
+    const w = this.w;
+    const inc = this.active.find((i) => i.id === 'dataloss' && i.target === db.id);
+    if (inc) { inc.lost = lost; inc.rebuilt = rebuilt; inc.restoredAt = w.time; }
+    this.lostTotal += lost;
+    if (!rebuilt) w.say(`Khôi phục DB từ snapshot: mất ~${lost} bản ghi ghi sau snapshot cuối.`, lost ? 'bad' : 'good');
+    else if (inc && inc.announced) w.say(`Không có snapshot để khôi phục: dữ liệu được dựng lại từ đầu, mất ~${lost} bản ghi.`, 'bad');
+    w.unlock('concept-backup'); w.unlock('concept-durability');
+    if (!(inc && inc.drill)) this.penalize(lost);
   }
   penalize(lost) {
     if (!lost) return;

@@ -1,7 +1,7 @@
 // Bảng điều khiển công trình: metrics (chỉ khi được giám sát), cấu hình, cáp, hành động.
 import { G, $, $$, esc, cmd, enterLink, cancelMode, hooks } from './state.js';
 import { iconURL } from './art.js';
-import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES } from '/shared/data.js';
+import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES, BACKUP, DATALOSS, ALERT, ONCALL } from '/shared/data.js';
 import { entryTitle } from './codexui.js';
 
 let root, metricsEl, lastSig = '', lastTk = -1, t = 0;
@@ -9,8 +9,14 @@ const img = (k, s = 20) => `<img class="ic" width="${s}" height="${s}" src="${ic
 
 const INC_NAMES = {
   spike: 'Traffic spike', stampede: 'Cache stampede', crash: 'Node crash', leak: 'Rò rỉ bộ nhớ', ddos: 'DDoS / botnet', partition: 'Network partition',
-  hotkey: 'Hot key', diskfull: 'Disk full', baddeploy: 'Deploy lỗi', outage: 'Mất điện lưới', analytics: 'Truy vấn báo cáo nặng',
+  hotkey: 'Hot key', diskfull: 'Disk full', baddeploy: 'Deploy lỗi', outage: 'Mất điện lưới', analytics: 'Truy vấn báo cáo nặng', dataloss: 'Xóa nhầm dữ liệu',
 };
+
+// Mô tả từng mức theo đúng ngưỡng trong ALERT, để người chơi thấy cái giá của việc chỉnh nhạy hay chặt.
+function alertHelp() {
+  const rows = Object.entries(ALERT).filter(([, a]) => a.for).map(([, a]) => `<b>${a.name}</b>: lỗi ≥ ${a.err * 100}%, p99 ≥ ${a.p99} ms, util ≥ ${a.util * 100}%, đĩa ≥ ${a.disk * 100}%, kéo dài ≥ ${a.for} s`);
+  return `Đèn page người on-call khi một component trong vùng của nó vi phạm ngưỡng liên tục. Nhạy báo sớm nhưng hay báo động giả (mất tỉnh táo, mọi người quen phớt lờ); Chặt yên tĩnh nhưng báo muộn, khi người dùng đã lỗi. Ngoài vùng đèn thì không có alert nào cả. Ack trong ${ONCALL.ack} s (phím V) hoặc cả đội bị page.<br>${rows.join('<br>')}`;
+}
 
 const CFG = {
   gateway: [
@@ -39,6 +45,11 @@ const CFG = {
       help: 'Tự động: thăng cấp replica ngay khi primary im lặng (nguy cơ split-brain khi partition). Quorum: cần đa số node đồng ý (cần ≥3 node).' },
     { k: 'retention', label: 'Retention policy', bool: true, codex: 'concept-capacity-cost', help: 'Tự dọn dữ liệu cũ: đĩa đầy chậm hơn nhiều.' },
     { k: 'salt', label: 'Key salting', bool: true, codex: 'concept-sharding', help: 'Rải key nóng ra nhiều shard: giảm skew khi sharding.' },
+    { k: 'backup', label: 'Backup (snapshot)', codex: 'concept-backup', opts: Object.entries(BACKUP).map(([k, b]) => [k, b.name]),
+      help: `Snapshot định kỳ để quay về khi dữ liệu bị xoá hay hỏng; replica không thay được vì nó sao chép cả lỗi. Hằng giờ: mỗi ${BACKUP.hourly.every} s, hằng ngày: mỗi ${BACKUP.daily.every} s. Mỗi snapshot tốn IO và đĩa; tắt Backup sẽ xoá mọi snapshot.` },
+  ],
+  lantern: [
+    { k: 'alert', label: 'Mức cảnh báo', codex: 'concept-alerting', opts: Object.entries(ALERT).map(([k, a]) => [k, a.name]), help: alertHelp() },
   ],
 };
 
@@ -80,7 +91,7 @@ export const Inspector = {
     const e = G.ents.get(G.selected);
     if (!e) return Inspector.close();
     const tk = G.sys ? G.sys.tk : -1;
-    const sig = signature(e);
+    const sig = signature(e) + actionSig(e);
     if (sig !== lastSig) { lastSig = sig; Inspector.render(); }
     else if (tk !== lastTk) { lastTk = tk; if (metricsEl) metricsEl.innerHTML = metricsHTML(e); }
   },
@@ -173,7 +184,31 @@ function metricsHTML(e) {
     case 'lb': if (m.shares) h += Object.entries(m.shares).map(([id, s]) => { const t = G.ents.get(+id); return r('→ ' + (t ? STRUCTS[t.k].name + ' #' + id : id), Math.round(s * 100) + '%'); }).join(''); if (m.asg !== undefined) h += r('Autoscaler: util nhóm', Math.round(m.asg * 100) + '%'); break;
     case 'gateway': h += r('Bị rate limit', m.limited + '/s') + r('Bị WAF chặn', m.blocked + '/s'); break;
   }
+  if (e.k === 'db') h += backupHTML(e, m, r);
   return h;
+}
+
+function backupHTML(e, m, r) {
+  const off = e.cfg.backup === 'off';
+  const age = m.snapAge === null ? 'chưa có' : `${m.snapAge} giây trước`;
+  return (m.corrupt ? '<div class="alert">DỮ LIỆU HỎNG: một phần đọc/ghi thất bại, replica cũng sao chép lỗi và failover không chữa được. Hãy khôi phục từ backup.</div>' : '')
+    + r('Backup gần nhất', off ? 'đang tắt' : m.snap ? `${age} · đang snapshot…` : age, off ? 'warn' : '')
+    + r('Chưa được bảo vệ', `~${m.rpo} bản ghi`, m.rpo > 20 ? 'warn' : '');
+}
+
+// Chỉ DB ngoài vùng giám sát mới luôn hiện nút khôi phục: trong vùng giám sát, nút chỉ có nghĩa khi dữ liệu đang hỏng.
+function restoreHTML(e, me, near) {
+  const m = G.sys && G.sys.n[e.id];
+  if (m && !m.corrupt) return '';
+  if (e.cfg.backup === 'off' || (m && m.snapAge === null)) return `<button class="btn small" disabled>Khôi phục từ backup <small>(${e.cfg.backup === 'off' ? 'Backup đang tắt' : 'chưa có snapshot'})</small></button>`;
+  const secs = DATALOSS.restore / (me && me.role === 'dba' ? 2 : 1);
+  return `<button class="btn small ${m ? 'primary' : ''}" data-act="restore" ${near ? '' : 'disabled'}>Khôi phục từ backup <small>(DB reboot ~${secs} s)</small></button>`;
+}
+
+// Nút khôi phục phụ thuộc số liệu sống (dữ liệu hỏng, đã có snapshot) nên phải kích hoạt vẽ lại bảng.
+function actionSig(e) {
+  const m = e.k === 'db' && G.sys && G.sys.n[e.id];
+  return m ? `${m.corrupt}${m.snapAge === null}` : '';
 }
 
 function haveCount(me, id) { return me ? me.inv.reduce((a, s) => a + (s && s.i === id ? s.n : 0), 0) : 0; }
@@ -199,6 +234,7 @@ function actions(e, near) {
   if (e.k === 'db') {
     if (e.shards < 4) h += `<div class="upg"><button class="btn small" data-act="shard" ${dis}>Thêm shard (${e.shards}→${e.shards + 1})</button><div class="ings">${costChips(C.shardCost, me)}</div></div>`;
     h += b('archive', 'Archive dữ liệu cũ', ' <small>(2 linh kiện)</small>');
+    h += restoreHTML(e, me, near);
   }
   if (e.k === 'gateway') h += e.waf ? '<span class="badge good">WAF đã lắp</span>' : `<button class="btn small" data-act="install" ${near && haveCount(me, 'waf_module') ? '' : 'disabled'}>Lắp module WAF (${haveCount(me, 'waf_module')})</button>`;
   if (e.k === 'lb') h += e.asg ? '<span class="badge good">Autoscaler đã lắp</span>' : `<button class="btn small" data-act="install" ${near && haveCount(me, 'asg_module') ? '' : 'disabled'}>Lắp Autoscaler (${haveCount(me, 'asg_module')})</button>`;

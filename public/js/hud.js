@@ -380,6 +380,7 @@ export const HUD = {
         <div><span>p99 đỉnh</span><b class="${pm.impact.peakP99 > 1500 ? 'bad' : ''}">${pm.impact.peakP99} ms</b></div>
         <div><span>Vi phạm SLO</span><b>${pm.impact.badSec}s</b></div>
         <div><span>Hài lòng thấp nhất</span><b>${pm.impact.minSat}%</b></div>
+        ${pm.impact.mttd === undefined ? '' : `<div><span>Phát hiện (MTTD)</span><b class="${pm.impact.mttd == null ? 'bad' : ''}">${pm.impact.mttd == null ? 'không alert' : pm.impact.mttd + 's'}</b></div><div><span>Nhận alert (MTTA)</span><b class="${pm.impact.mtta == null ? 'bad' : ''}">${pm.impact.mtta == null ? '—' : pm.impact.mtta + 's'}</b></div>`}
         <div><span>Người dùng</span><b class="${pm.impact.users < 0 ? 'bad' : ''}">${pm.impact.users >= 0 ? '+' : ''}${pm.impact.users}</b></div>
       </div>
       <h3>Kiến trúc của bạn lúc đó (${good}/${pm.checks.length} đạt)</h3>

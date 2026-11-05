@@ -13,8 +13,8 @@ const gen2 = add('generator', 47, 45); gen2.fuel = 200; S('generator')[0].fuel =
 add('lantern', 45, 38); add('lantern', 49, 41);
 gw.links = [lb.id]; lb.links = [app1.id, app2.id]; app1.links = [cache.id, db.id, q.id]; app2.links = [cache.id, db.id, q.id]; cache.links = [db.id]; db.links = [rep.id]; q.links = [db.id];
 w.users = +process.argv[3] || 80;
-const which = process.argv[2] ? process.argv[2].split(',') : ['spike', 'stampede', 'crash', 'leak', 'ddos', 'partition', 'hotkey', 'diskfull', 'baddeploy', 'outage', 'analytics'];
-function run(secs) { for (let i = 0; i < secs / DT; i++) { w.step(DT); for (const g of S('generator')) g.fuel = 200; room.snapshot(false); } }
+const which = process.argv[2] ? process.argv[2].split(',') : ['spike', 'stampede', 'crash', 'leak', 'ddos', 'partition', 'hotkey', 'diskfull', 'baddeploy', 'outage', 'analytics', 'dataloss'];
+function run(secs) { for (let i = 0; i < secs / DT; i++) { w.step(DT); for (const g of S('generator')) g.fuel = 200; if (w.alerts.groups().some((g) => g.state === 'firing')) w.cmd(p.pid, { c: 'ack' }); room.snapshot(false); } } // người trực ack ngay mọi page
 run(20);
 let errs = 0; console.error = (...a) => { errs++; console.log('ERR', ...a); };
 for (const id of which) {

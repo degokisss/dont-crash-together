@@ -45,12 +45,43 @@ Mỗi component có **công suất** (đơn vị công việc/s) và chi phí th
 | **App Server** | Xử lý logic. Đọc → Cache (nếu có cáp tới cache) rồi DB; ghi → Queue (nếu có) hoặc DB. Nhiều App không có LB = chỉ App đầu tiên nhận tải. | Tier 1–3 (**scale up cần reboot** ~10 s), **retries** 0–3, **backoff+jitter**, **circuit breaker** (mở khi >50% lỗi từ downstream; fail fast, thăm dò 5%), **Deploy** (rủi ro 30% bản lỗi → lỗi ~40% request của node đó, không thấy nếu không giám sát), **Rollback**, **Restart** |
 | **Cache** | Read-through: hit trả ngay, miss chuyển tới DB. Hit ratio phụ thuộc tier & TTL. Khởi động nguội mất ~20 s mới ấm. Không jitter → mọi key hết hạn cùng lúc mỗi chu kỳ TTL → **stampede** (hit ≈ 10% trong ~3 s). | TTL 10/30/60 s (dài = hit cao hơn nhưng dữ liệu cũ hơn), **Jitter**, **Request coalescing**, tier |
 | **Message Queue** | Nhận ghi nhanh (ack sớm), xả dần vào DB theo công suất DB còn trống (backpressure). Backlog đầy → từ chối ghi. Đo **lag**. | tier |
-| **Database** | Công suất đọc/ghi chung (đọc cost 2, ghi cost 5). Đọc có thể chia cho replica. Ghi chỉ vào **leader**. Đĩa đầy → ghi thất bại. | Tier, **shards** (1–4; có skew nên không scale tuyến tính), **sync/async replication**, **failover** (tắt / tự động / quorum), **retention** (giảm tốc độ đầy đĩa), **key salting** (giảm skew), **Archive** (dọn đĩa) |
+| **Database** | Công suất đọc/ghi chung (đọc cost 2, ghi cost 5). Đọc có thể chia cho replica. Ghi chỉ vào **leader**. Đĩa đầy → ghi thất bại. | Tier, **shards** (1–4; có skew nên không scale tuyến tính), **sync/async replication**, **failover** (tắt / tự động / quorum), **retention** (giảm tốc độ đầy đĩa), **key salting** (giảm skew), **Backup** (tắt / hằng ngày / hằng giờ), **Archive** (dọn đĩa), **Khôi phục** từ backup |
 | **Read Replica** | Nhận đọc từ DB primary, độ trễ sao chép tăng khi primary quá tải. Có thể được thăng cấp làm leader khi primary chết. | tier |
 
 ### Độ bền dữ liệu
 Khi leader chết: ghi chưa được sao chép (async) bị **mất**. Sync replication không mất dữ liệu nhưng ghi thất bại nếu replica không với tới được (CP).
 **Split-brain**: partition + failover tự động + async → hai leader nhận ghi → khi nối lại, xung đột = mất dữ liệu. **Quorum** mode chỉ thăng cấp khi đa số node với tới nhau (cần ≥ 3 node: primary + 2 replica).
+
+### Backup & khôi phục
+Replica sao chép cả lỗi lẫn lệnh xoá nhầm nên **không thay được backup**. Cấu hình **Backup** của DB (bảng `BACKUP` trong `shared/data.js`):
+
+| Backup | Chu kỳ snapshot | Snapshot chạy | IO thêm lúc chạy | Đĩa mỗi snapshot (DB tier 1) |
+|---|---|---|---|---|
+| Tắt | — | — | — | — (xoá mọi snapshot đang có) |
+| Hằng ngày | 150 s (một ngày game) | 8 s | +90 | 0,8% |
+| Hằng giờ | 30 s | 4 s | +60 | 0,5% |
+
+- Snapshot đầu tiên chạy ngay khi bật Backup. Mỗi snapshot hoàn tất đặt lại bộ đếm **ghi chưa được bảo vệ**. Số bản ghi có nguy cơ mất (**RPO** thực tế) = ghi chưa được bảo vệ × 0,05; thẻ DB hiện "Backup gần nhất" và "Chưa được bảo vệ". Khi Backup tắt, mọi ghi từ đầu game đều chưa được bảo vệ.
+- Chi phí: mỗi snapshot chiếm thêm đĩa (chia theo dung lượng đĩa của tier; **Retention** giảm còn 40%) và cộng IO vào DB lúc chạy, nên backup dày hơn tốn đĩa và IO hơn. Snapshot dừng khi DB đang chết/reboot hoặc dữ liệu đang hỏng (không ghi đè điểm khôi phục sạch bằng dữ liệu hỏng).
+- Sự cố `dataloss` đánh dấu một DB là **hỏng dữ liệu**: 40% request đọc/ghi thất bại, cả trên DB lẫn replica. Failover sang replica **không** chữa được vì dữ liệu hỏng đã được sao chép.
+- **Khôi phục từ backup** (lệnh `c_restore`, đứng gần DB) cần Backup bật, đã có snapshot và dữ liệu đang hỏng. DB reboot 12 s (**DBA** 6 s, **RTO**), mất các ghi sau snapshot cuối (tính vào dữ liệu mất và trừ người dùng như failover mất dữ liệu), hết hỏng và sự cố kết thúc. Không có snapshot: khôi phục bị từ chối, và sau 60 s cả đội tự dựng lại dữ liệu từ đầu, mất toàn bộ ghi chưa được bảo vệ.
+- Crash DB kèm hỏng đĩa (30% số lần crash DB) dùng cùng công thức, nên có snapshot gần đây thì mất ít hơn nhiều.
+
+### Cảnh báo & on-call
+Đèn giám sát có cấu hình **Mức cảnh báo** (`lantern.cfg.alert`, bảng `ALERT` trong `shared/data.js`, mặc định **Vừa**). Mỗi 0,5 s đèn đánh giá số liệu của từng component trong vùng của nó (đúng số liệu bạn thấy ở inspector). Component ngoài mọi vùng đèn, hoặc trong vùng đèn đang mất điện/để Tắt, **không bao giờ page**. Component nằm trong nhiều vùng dùng đèn nhạy nhất đang bật alert.
+
+| Mức | Lỗi (node) | p99 (node) | Utilization | Đĩa DB | Phải vi phạm liên tục |
+|---|---|---|---|---|---|
+| Tắt | — | — | — | — | — |
+| Nhạy | ≥ 0,5% | ≥ 300 ms | ≥ 50% | ≥ 50% | 2 s |
+| Vừa | ≥ 5% | ≥ 1200 ms | ≥ 92% | ≥ 85% | 6 s |
+| Chặt | ≥ 30% | ≥ 4500 ms | ≥ 120% | ≥ 97% | 20 s |
+
+- Mỗi cặp (quy tắc, node) là một máy trạng thái `ok → pending → firing → acked` trong một registry duy nhất (`w.alerts`). Vi phạm → `pending`; đủ thời gian `for` thì `firing` và page; hết vi phạm liên tục 10 s thì tự đóng (chống nhấp nháy). Một điều kiện chỉ page một lần (khoá `quy tắc:node`), và nhiều quy tắc cùng vi phạm trên một node chỉ page một lần (alert nặng hơn, cảnh báo → lỗi, vẫn page lại). Node đang reboot được coi là bảo trì, không page. Alert đang kêu được lưu cùng thế giới nên tải lại không page lại.
+- **On-call**: đúng một người chơi online là người on-call, đổi sang người kế tiếp mỗi ngày mới, hoặc nhận ca bằng lệnh `c_oncall` (nút "Nhận ca" ở bảng Pager). Page hiện nổi bật (toast + âm thanh) cho người on-call, và là thông báo nhỏ ("X đang bị page") cho những người khác.
+- **Ack** (`c_ack`, phím V hoặc nút Ack ở Pager) phải trong **20 s**. Quá hạn thì alert **escalate**: cả đội bị page, người on-call mất **15** tỉnh táo, và từ đó ai cũng ack được. Trước khi escalate chỉ người on-call ack được. Giao ca đưa các page chưa ack sang người mới với cửa sổ ack mới.
+- **Báo động giả**: page kêu khi không có sự cố nào đang chạy và SLO vẫn đạt. Mỗi page giả làm người on-call mất **4** tỉnh táo. Nhạy kêu sớm nhưng hay báo giả; Chặt không báo giả nhưng chỉ kêu khi người dùng đã lỗi (ví dụ crash App duy nhất: Nhạy ~3 s, Vừa ~7 s, Chặt ~21 s sau khi crash, SLO vỡ ngay từ giây 0). `node tools/alert-sim.js` in bảng so sánh các mức trên cùng kịch bản có seed.
+- Số liệu của sự cố: `detectedAt` (alert đầu tiên kêu trong sự cố) và `ackedAt`; post-mortem có thêm các dòng *Alert phát hiện trước khi SLO vỡ*, *MTTD*, *MTTA* và *Báo động giả* (số page giả kể từ sự cố trước), kèm lý do thật khi không có alert nào (alert Tắt, node ngoài vùng đèn, ngưỡng quá chặt).
 
 ## Sinh tồn
 - Chỉ số: ❤ Máu, ☕ Năng lượng (đói), 🧠 Tỉnh táo. Đói 0 → mất máu. Tỉnh táo <30%: màn hình rung/méo, số liệu ở thẻ người dùng bị nhiễu; <22%: báo động giả xuất hiện (rồi tự nhận là sai); <15%: "cảnh báo giả" (phantom) hiện hình và tấn công.
@@ -73,6 +104,7 @@ Khi leader chết: ghi chưa được sao chép (async) bị **mất**. Sync rep
 | `baddeploy` | Deploy lỗi | Bản deploy mới lỗi | Deploy từng node (canary), giám sát, rollback |
 | `outage` | Mất điện lưới | Một máy phát bị sập 30 s | Hai máy phát chồng lấn, phân tán component |
 | `analytics` | Truy vấn báo cáo nặng | Tải DB tăng đột biến (trên replica nếu có) | Cô lập workload bằng read replica |
+| `dataloss` | Xóa nhầm dữ liệu (DROP TABLE) | Từ ngày 6: một DB hỏng dữ liệu, 40% đọc/ghi lỗi tới khi khôi phục; replica và failover không chữa được | Backup + Khôi phục, giám sát DB để phát hiện sớm, đừng coi replica là backup |
 
 ## Điểm kiến thức (KP)
 Công thức nâng cao (Cache, Queue, CDN, Replica, Tháp tường lửa, Module WAF, Chaos Lab, Module Autoscaler) phải được **học** bằng KP trước khi chế/đặt (vẫn cần đứng gần Phòng lab). KP dùng chung cả đội.
@@ -83,7 +115,7 @@ Công thức nâng cao (Cache, Queue, CDN, Replica, Tháp tường lửa, Module
 Trong Sơ đồ (M) bấm Tĩnh/Đọc/Ghi để gửi một request mẫu: server lấy mẫu một đường đi theo đúng xác suất của mô phỏng hiện tại (chia tải, cache hit/miss, drop do quá tải, retry, breaker, cáp đứt, rate limit...) và hiện từng bước với thời gian cộng dồn. Kèm mẫu 60 request (tỉ lệ thành công, p50/p99, lỗi hay gặp nhất) và gợi ý sổ tay. Node ngoài vùng Đèn giám sát chỉ hiện "???".
 
 ## Post-mortem
-Khi sự cố kết thúc, game sinh báo cáo: tác động (thời gian, % lỗi tối đa, p99 tối đa, người dùng ảnh hưởng), danh sách kiểm tra *"bạn có X không?"* (✓/✗ kèm lý do thật từ trạng thái hệ thống lúc đó) và gợi ý Codex.
+Khi sự cố kết thúc, game sinh báo cáo: tác động (thời gian, % lỗi tối đa, p99 tối đa, người dùng ảnh hưởng), danh sách kiểm tra *"bạn có X không?"* (✓/✗ kèm lý do thật từ trạng thái hệ thống lúc đó) và gợi ý Codex. Mọi sự cố đều có thêm các dòng về cảnh báo (xem *Cảnh báo & on-call*).
 
 ## Chaos Lab
 Công trình cấp 3: cho phép kích hoạt thủ công một sự cố đã gặp ("game day") — sự cố không bị tính vào SLO ngày và không làm mất user. Chỗ an toàn để thử nghiệm kiến trúc.

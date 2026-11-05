@@ -5,6 +5,7 @@ import { Renderer } from './render.js';
 import { HUD } from './hud.js';
 import { Inspector } from './inspector.js';
 import { Dashboard } from './dashboard.js';
+import { Pager } from './pager.js';
 import { CodexUI, entryTitle } from './codexui.js';
 import { SFX } from './sfx.js';
 import { genTiles } from '/shared/worldgen.js';
@@ -163,6 +164,7 @@ window.addEventListener('keydown', (ev) => {
   if (k === 'm') Dashboard.toggle();
   else if (k === 'n') HUD.toast(SFX.toggle() ? 'Đã tắt âm thanh.' : 'Đã bật âm thanh.', 'info');
   else if (k === 'c') HUD.toggleCraft();
+  else if (k === 'v') Pager.ack();
   else if (k === 'k' || k === 'b') CodexUI.toggle();
   else if (k === 'enter') { ev.preventDefault(); HUD.focusChat(); }
   else if (k === ' ') { ev.preventDefault(); cmd('attack'); }
@@ -286,6 +288,7 @@ function loop(now) {
   step(() => HUD.frame(dt));
   step(() => Inspector.frame());
   step(() => Dashboard.frame());
+  step(() => Pager.frame());
   pingT += dt;
   if (pingT > 3 && !G.solo) { pingT = 0; send({ t: 'ping', c: performance.now() }); }
 }
@@ -296,9 +299,10 @@ window.addEventListener('beforeunload', () => { if (G.solo && G.net && G.net.sav
 HUD.init();
 Inspector.init();
 Dashboard.init();
+Pager.init();
 CodexUI.init();
 bindMouse();
 initMenu();
 // tiện ích debug/test
 window.__G = G;
-window.__UI = { Inspector, Dashboard, CodexUI, HUD };
+window.__UI = { Inspector, Dashboard, CodexUI, HUD, Pager };

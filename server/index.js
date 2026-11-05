@@ -43,6 +43,8 @@ function handle(req, res) {
 }
 
 // ---- phòng ----
+const MAX_ROOMS = 50;
+const IDLE_MS = +process.env.DCT_IDLE_MS || 60_000;
 const rooms = new Map();
 const safeName = (n) => String(n || 'main').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'main';
 
@@ -59,17 +61,35 @@ function getRoom(name) {
     const tmp = file + '.tmp';
     fs.writeFile(tmp, json, (e) => { if (!e) fs.rename(tmp, file, () => {}); });
   };
-  try { room = new Room({ name, save, onSave }); } catch (e) { console.error('save hỏng, tạo thế giới mới', e.message); room = new Room({ name, onSave }); }
+  try { room = new Room({ name, save, onSave }); } catch (e) {
+    console.error('save hỏng, giữ bản sao .bad và tạo thế giới mới', e.message);
+    try { fs.renameSync(file, file + '.bad'); } catch {}
+    room = new Room({ name, onSave });
+  }
   room.start();
   rooms.set(name, room);
   console.log(`[room ${name}] ${save ? 'đã tải từ ổ đĩa' : 'thế giới mới'}`);
   return room;
 }
 
+function closeIfIdle(room) {
+  clearTimeout(room._idle);
+  room._idle = setTimeout(() => {
+    if (room.clients.size) return;
+    try { fs.writeFileSync(path.join(SAVES, room.name + '.json'), room.world.toSave()); } catch (e) { console.error(e); }
+    room.stop();
+    rooms.delete(room.name);
+    console.log(`[room ${room.name}] đã đóng (không còn người chơi)`);
+  }, IDLE_MS);
+}
+
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://x');
-  const room = getRoom(safeName(url.searchParams.get('room')));
+  const name = safeName(url.searchParams.get('room'));
+  if (!rooms.has(name) && rooms.size >= MAX_ROOMS) { ws.close(1013, 'server full'); return; }
+  const room = getRoom(name);
+  clearTimeout(room._idle);
   const client = { send: (s) => { if (ws.readyState === 1) ws.send(s); } };
   let joined = false;
   ws.on('message', (data) => {
@@ -85,7 +105,7 @@ wss.on('connection', (ws, req) => {
       room.msg(client, m);
     } catch (e) { console.error('[ws] lỗi xử lý tin nhắn:', e); }
   });
-  ws.on('close', () => { if (joined) room.leave(client); });
+  ws.on('close', () => { if (joined) room.leave(client); if (!room.clients.size) closeIfIdle(room); });
   ws.on('error', () => {});
 });
 

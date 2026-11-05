@@ -190,6 +190,23 @@ export const CODEX_INCIDENTS = [
       { name: 'Nâng tier DB', how: 'Nâng công suất DB cho đủ dư.', tradeoff: 'Tốn chi phí, không giải quyết cạnh tranh tài nguyên về bản chất.' }
     ]
   },
+  {
+    id: 'inc-dataloss', cat: 'incident',
+    title: 'Xóa nhầm dữ liệu / DROP TABLE',
+    summary: 'Một thao tác nhầm hoặc migration lỗi xoá hay ghi đè dữ liệu; lỗi được sao chép sang mọi replica ngay lập tức.',
+    body: `<p>Không phải mọi mất dữ liệu đều do phần cứng. Một lệnh <code>DROP TABLE</code> chạy nhầm môi trường, một migration thiếu điều kiện <code>WHERE</code> hay một bug ghi sai đều là thay đổi "hợp lệ" với DB, và replication sao chép nó sang mọi bản sao trong tích tắc. Failover và replica vô ích ở đây vì chúng chỉ trả lời câu hỏi "node chết thì sao". Thứ cứu được là một điểm trong quá khứ: backup/snapshot.</p><p>Trong game: <code>dataloss</code> (từ ngày 6) đánh dấu một DB là hỏng: ~40% request đọc và ghi thất bại, trên cả DB lẫn replica, và failover sang replica không chữa được. Nếu Backup bật và đã có snapshot, đứng gần DB bấm <b>Khôi phục từ backup</b>: DB reboot ~12 s (DBA nhanh gấp đôi) và bạn mất các ghi sau snapshot cuối. Không có snapshot thì sau ~60 s cả đội phải dựng lại dữ liệu từ đầu và mất mọi ghi chưa được bảo vệ. Snapshot tạm dừng khi dữ liệu hỏng để không ghi đè điểm khôi phục sạch.</p>`,
+    pros: [], cons: [],
+    real: 'Ngày 31/1/2017 một kỹ sư GitLab.com xoá nhầm dữ liệu của DB primary; trong các cơ chế backup/replication chỉ còn một snapshot thủ công cũ khoảng 6 giờ dùng được nên GitLab mất khoảng 6 giờ dữ liệu, và công bố công khai bản postmortem.',
+    tryIt: 'Bật Backup hằng giờ ở DB rồi gây dataloss trong Chaos Lab và bấm Khôi phục; sau đó tắt Backup (chỉ còn replica) và chạy lại để thấy khác biệt.',
+    see: ['concept-backup', 'concept-durability', 'concept-replication', 'comp-replica', 'comp-db'],
+    symptoms: ['Lỗi đọc và ghi cùng tăng ~40% dù DB không quá tải', 'Thẻ DB báo "DỮ LIỆU HỎNG"', 'Failover sang replica không làm lỗi giảm', 'Nếu DB ngoài vùng sáng: chỉ có khách hàng phàn nàn mới báo cho bạn'],
+    mitigations: [
+      { name: 'Backup định kỳ (snapshot)', how: 'Bật Backup hằng giờ hoặc hằng ngày ở cấu hình DB rồi khôi phục từ snapshot cuối.', tradeoff: 'Tốn đĩa và IO mỗi snapshot; mất các ghi sau snapshot cuối (RPO = tuổi snapshot).' },
+      { name: 'Rút ngắn chu kỳ backup', how: 'Dùng Hằng giờ thay vì Hằng ngày để RPO nhỏ hơn.', tradeoff: 'Tốn đĩa và IO nhiều hơn; vẫn không bằng sao lưu log liên tục.' },
+      { name: 'Giám sát DB', how: 'Giữ DB trong vùng sáng để thấy cảnh báo dữ liệu hỏng và khôi phục sớm, ít ghi bị mất hơn.', tradeoff: 'Tốn điện và công theo dõi.' },
+      { name: 'Giới hạn thay đổi nguy hiểm', how: 'Review migration, tách quyền ghi production và thử trên staging trước.', tradeoff: 'Ship chậm hơn và vẫn không loại hết lỗi con người.' }
+    ]
+  },
 
   // ───────────────────────── CONCEPTS ─────────────────────────
   {
@@ -321,7 +338,19 @@ export const CODEX_INCIDENTS = [
     cons: ['Sync làm tăng độ trễ và giảm khả dụng', 'Backup chưa kiểm thử khôi phục là vô giá trị', 'Chi phí lưu trữ và vận hành'],
     real: 'Sự cố GitLab.com ngày 31/1/2017 xoá nhầm dữ liệu primary và nhiều cơ chế backup không dùng được, được ghi lại công khai trong postmortem.',
     tryIt: 'Chạy crash trên DB với async và sync; so sánh lượng ghi bị mất và lỗi ghi.',
-    see: ['concept-replication', 'concept-cap', 'comp-replica', 'inc-diskfull'],
+    see: ['concept-backup', 'concept-replication', 'concept-cap', 'comp-replica', 'inc-diskfull', 'inc-dataloss'],
+    symptoms: [], mitigations: []
+  },
+  {
+    id: 'concept-backup', cat: 'concept',
+    title: 'Backup, RPO & RTO (replica không phải backup)',
+    summary: 'Backup là điểm quay về trong quá khứ; replica chỉ là bản sao của hiện tại nên sao chép cả lỗi.',
+    body: `<p>Backup là bản sao dữ liệu <i>tại một thời điểm</i>, được giữ riêng khỏi dữ liệu sống. <b>RPO</b> thực tế chính là tuổi của snapshot cuối (backup hằng giờ thì mất tới ~1 giờ ghi); <b>RTO</b> là thời gian dựng lại dữ liệu từ đó (nạp, replay log, kiểm tra). Replica thì ngược lại: nó luôn cố giống primary <i>ngay bây giờ</i>, nên thảm hoạ logic (xoá nhầm, migration lỗi, bug ghi sai, ransomware) được sao chép sang nó tức thì. Replica chống mất node, backup chống mất dữ liệu: hai việc khác nhau.</p><p>Trong game: cấu hình DB có Backup <b>Tắt</b>, <b>Hằng giờ</b> (snapshot mỗi 30 s) và <b>Hằng ngày</b> (mỗi 150 s, một ngày game). Mỗi snapshot chạy vài giây (tốn IO, DB chậm đi) rồi chiếm một phần đĩa; Retention giảm phần đĩa này. Thẻ DB hiện "Backup gần nhất" và số bản ghi chưa được bảo vệ. Khi <code>dataloss</code> xảy ra, nút <b>Khôi phục từ backup</b> đưa DB về snapshot cuối (reboot ~12 s). Tắt Backup xoá mọi snapshot.</p><p>Hai quy tắc thực tế: backup chưa từng thử khôi phục thì chưa phải là backup, và nó phải nằm tách khỏi hệ thống nó bảo vệ (quy tắc 3-2-1: 3 bản, 2 loại lưu trữ, 1 bản ngoài site).</p>`,
+    pros: ['Quay về được điểm trước khi dữ liệu bị xoá hay hỏng', 'Chống lỗi con người, bug ghi sai và ransomware mà replica không chống được', 'RPO/RTO đo được và chọn được theo chi phí'],
+    cons: ['Tốn đĩa và IO mỗi lần snapshot', 'Mất các ghi sau snapshot cuối (RPO > 0)', 'Khôi phục có downtime (RTO) và chưa thử thì có thể vô dụng'],
+    real: 'Năm 2014 Code Spaces bị kẻ tấn công vào bảng điều khiển AWS xoá dữ liệu cùng các bản backup nằm trong cùng tài khoản; công ty đóng cửa gần như ngay sau đó.',
+    tryIt: 'Bật Backup hằng giờ rồi hằng ngày; gây dataloss trong Chaos Lab và so số bản ghi mất khi khôi phục với đĩa và IO bạn phải trả.',
+    see: ['concept-durability', 'concept-replication', 'inc-dataloss', 'comp-db', 'concept-capacity-cost'],
     symptoms: [], mitigations: []
   },
   {
@@ -358,6 +387,26 @@ export const CODEX_INCIDENTS = [
     real: 'AWS Auto Scaling hỗ trợ target tracking, scheduled và predictive scaling với cooldown/warm-up cấu hình được; Kubernetes HPA có cơ chế tương tự.',
     tryIt: 'Bật autoscaler và quan sát đợt tăng instance sau 15 s khi spike; thử thêm rate limit.',
     see: ['inc-spike', 'comp-lb', 'concept-scaling', 'concept-capacity-cost', 'concept-cold-start'],
+    symptoms: [], mitigations: []
+  },
+  {
+    id: 'concept-alerting', cat: 'concept',
+    title: 'Alerting, on-call & alert fatigue',
+    summary: 'Cảnh báo tốt gọi đúng người, đúng lúc, về thứ đáng làm ngay; ngưỡng quá nhạy hay quá chặt đều làm hỏng điều đó.',
+    body: `<p>Một <b>alert</b> là quy tắc trên metric: "tỉ lệ lỗi ≥ 5% liên tục 6 giây thì page người on-call". Ba chỉ số đo chất lượng của cả chuỗi: <b>MTTD</b> (từ lúc lỗi bắt đầu tới lúc có alert), <b>MTTA</b> (từ alert tới lúc có người nhận/ack) và <b>MTTR</b> (tới lúc khôi phục). Alert chỉ rút ngắn được hai cái đầu; cái cuối là việc của runbook và tự động hoá.</p>
+<p><b>Nhạy hay chặt</b> là đánh đổi, không có đáp án đúng cho mọi hệ thống: ngưỡng thấp và <code>for</code> ngắn báo sớm, nhưng kêu cả khi chỉ là nhiễu thoáng qua (<b>báo động giả</b>); ngưỡng cao yên tĩnh, nhưng chỉ kêu khi <b>người dùng đã lỗi</b>. Báo động giả làm người trực mất ngủ và dạy cả đội phớt lờ pager (<b>alert fatigue</b>), đến khi một page thật bị bỏ qua.</p>
+<ul>
+<li><b>Triệu chứng và nguyên nhân</b>: alert theo triệu chứng (lỗi, p99: người dùng đang đau) ít nhiễu và luôn đáng hành động; alert theo nguyên nhân (utilization, đĩa) báo sớm hơn nhưng dễ kêu khi chưa có hại gì. Đừng page vì CPU 50%.</li>
+<li><b>SLO burn</b>: thay vì ngưỡng cố định, báo khi tốc độ đốt ngân sách lỗi đủ nhanh để vỡ SLO trước hạn.</li>
+<li><b>Dedup và gộp</b>: một điều kiện không được page lại mỗi giây, và nhiều quy tắc cùng vi phạm trên một node chỉ nên là một page.</li>
+<li><b>Escalation</b>: không ai ack trong thời hạn thì page cả đội; alert không có chủ chỉ là tiếng ồn.</li>
+<li>Trong game: chỉnh <b>Mức cảnh báo</b> ở Đèn giám sát (Tắt, Nhạy, Vừa, Chặt). Người on-call đổi mỗi ngày (hoặc nhận ca); ack bằng phím V trong 20 giây, quá hạn thì cả đội bị page và người trực mất tỉnh táo; mỗi page giả cũng tốn tỉnh táo. Component ngoài vùng đèn không có alert nào, post-mortem ghi MTTD, MTTA và số báo động giả.</li>
+</ul>`,
+    pros: ['Rút ngắn MTTD và MTTA, người dùng chịu lỗi ít hơn', 'Có chủ rõ ràng nhờ on-call và escalation', 'Ngưỡng theo triệu chứng ít nhiễu và dễ hành động'],
+    cons: ['Ngưỡng nhạy gây báo động giả và alert fatigue', 'Ngưỡng chặt phát hiện muộn, người dùng đã lỗi', 'Ngưỡng cố định lệch dần khi tải tăng nên cần chỉnh lại', 'On-call tốn sức người và tỉnh táo'],
+    real: 'Google SRE Workbook (chương "Alerting on SLOs") khuyên cảnh báo theo tốc độ đốt error budget nhiều cửa sổ thời gian thay vì ngưỡng đơn giản; PagerDuty và Opsgenie chuẩn hoá luồng on-call, ack và escalation.',
+    tryIt: 'Đặt Mức cảnh báo ở Đèn giám sát là Nhạy rồi để yên một lúc để đếm báo động giả; sau đó đặt Chặt và gây crash trong Chaos Lab để so MTTD trong post-mortem.',
+    see: ['concept-observability', 'comp-lantern', 'concept-slo', 'concept-postmortem', 'inc-spike'],
     symptoms: [], mitigations: []
   }
 ];

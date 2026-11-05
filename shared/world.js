@@ -2,13 +2,14 @@
 // Chạy giống hệt nhau trong Node (co-op) và Web Worker (solo). Không có DOM, không có I/O.
 import {
   TILE, MAP_W, MAP_H, DT, FLOW_DT, INV_SLOTS, REACH, BUILD_RANGE, STATION_R, HANDS_ON_R, PWR_R,
-  ITEMS, STRUCTS, COMP, RECIPES, COOK, RESOURCES, MOBS, PLAYER, MAX_SHARDS, DAY_LEN,
-  clockAt, SEASON_VI, canLink, ROLES, CLS, KP_START, KP_PER_CODEX,
+  ITEMS, STRUCTS, COMP, RECIPES, COOK, RESOURCES, MOBS, PLAYER, MAX_SHARDS, DAY_LEN, BACKUP, DATALOSS,
+  clockAt, SEASON_VI, canLink, ROLES, CLS, KP_START, KP_PER_CODEX, ALERT,
 } from './data.js';
 import { mulberry32, clamp, dist, round1 } from './util.js';
 import { genTiles, genResources, B, BASE_TX, BASE_TY } from './worldgen.js';
 import { Flow } from './flow.js';
 import { Director } from './incidents.js';
+import { Alerts } from './alerts.js';
 import { stepMobs, spawnMob } from './mobs.js';
 import { stepTips } from './tips.js';
 import { CODEX_COMPONENTS } from './codex_components.js';
@@ -33,7 +34,7 @@ export class World {
     this.structs = new Set();
     this.items = new Set();
     this.resting = new Set(); // tài nguyên đang chờ mọc lại
-    this.stash = {}; // token -> dữ liệu người chơi offline
+    this.stash = Object.create(null); // token -> dữ liệu người chơi offline
     this.events = [];
     this.codex = new Set();
     this.kp = KP_START;
@@ -57,6 +58,7 @@ export class World {
     this.tiles = genTiles(this.seed);
     this.flow = new Flow(this);
     this.director = new Director(this);
+    this.alerts = new Alerts(this);
     if (save) this.load(save);
     else { this.generate(); this.kp = KP_START; this.events = []; }
   }
@@ -127,7 +129,8 @@ export class World {
       case 'lb': e.asg = false; e.cfg = { algo: 'rr' }; break;
       case 'app': e.ver = 1; e.bad = false; e.virt = 0; e.cfg = { retries: 1, backoff: false, breaker: false }; break;
       case 'cache': e.cfg = { ttl: 30, jitter: false, coalesce: false }; break;
-      case 'db': e.shards = 1; e.leader = true; e.cfg = { repl: 'async', failover: 'off', retention: false, salt: false }; break;
+      case 'db': e.shards = 1; e.leader = true; e.cfg = { repl: 'async', failover: 'off', retention: false, salt: false, backup: 'off' }; break;
+      case 'lantern': e.cfg = { alert: 'normal' }; break;
       case 'turret': e.fire = false; break;
       case 'stove': e.cooking = null; e.done = false; break;
       case 'chest': e.inv = new Array(INV_SLOTS).fill(null); break;
@@ -243,7 +246,7 @@ export class World {
 
   // ---------------- người chơi ----------------
   addPlayer(pid, name, token, hue, role = 'sre') {
-    if (!ROLES[role]) role = 'sre';
+    if (!Object.hasOwn(ROLES, role)) role = 'sre';
     const saved = this.stash[token];
     let p;
     const gw = [...this.structs].find((s) => s.k === 'gateway');
@@ -265,9 +268,10 @@ export class World {
     }
     p.pid = pid;
     p.name = name;
-    if (!saved || !ROLES[saved.role]) p.role = role; // nhân vật đã lưu giữ nguyên vai trò
+    if (!saved || !Object.hasOwn(ROLES, saved.role)) p.role = role; // nhân vật đã lưu giữ nguyên vai trò
     if (p.role === 'secops' && p.mhp < 130) { p.mhp = 130; p.hp = Math.min(130, p.hp + 30); }
     p._token = token;
+    if (p.ghost) p._respawnAt = this.time + PLAYER.respawn; // _respawnAt không nằm trong save
     p._in = { mx: 0, my: 0 };
     p._goal = null;
     p._cd = 0;
@@ -459,6 +463,7 @@ export class World {
   }
 
   c_unequip(p, m) {
+    if (m.slot !== 'hand' && m.slot !== 'body') return;
     const cur = p.eq[m.slot];
     if (!cur) return;
     const i = p.inv.indexOf(null);
@@ -644,12 +649,13 @@ export class World {
       lb: { algo: ['rr', 'lc', 'hash'] },
       app: { retries: [0, 1, 2, 3], backoff: [true, false], breaker: [true, false] },
       cache: { ttl: [10, 30, 60], jitter: [true, false], coalesce: [true, false] },
-      db: { repl: ['async', 'sync'], failover: ['off', 'auto', 'quorum'], retention: [true, false], salt: [true, false] },
+      db: { repl: ['async', 'sync'], failover: ['off', 'auto', 'quorum'], retention: [true, false], salt: [true, false], backup: Object.keys(BACKUP) },
+      lantern: { alert: Object.keys(ALERT) },
     };
     const allowed = V[e.k] && V[e.k][m.key];
     if (!allowed || !allowed.includes(m.val)) return;
     e.cfg[m.key] = m.val;
-    const CU = { algo: 'concept-lb-algos', ttl: 'concept-cache-ttl', jitter: 'concept-cache-ttl', coalesce: 'concept-cold-start', repl: 'concept-replication', failover: 'concept-cap', retention: 'concept-capacity-cost', salt: 'concept-sharding', retries: 'concept-retry-storm', backoff: 'concept-retry-storm', breaker: 'concept-circuit-breaker', rl: 'concept-load-shedding' };
+    const CU = { algo: 'concept-lb-algos', ttl: 'concept-cache-ttl', jitter: 'concept-cache-ttl', coalesce: 'concept-cold-start', repl: 'concept-replication', failover: 'concept-cap', retention: 'concept-capacity-cost', salt: 'concept-sharding', backup: 'concept-backup', alert: 'concept-alerting', retries: 'concept-retry-storm', backoff: 'concept-retry-storm', breaker: 'concept-circuit-breaker', rl: 'concept-load-shedding' };
     if (CU[m.key]) this.unlock(CU[m.key]);
     this.flow.dirty = true;
   }
@@ -701,6 +707,29 @@ export class World {
     e._st.archUntil = this.time + 8;
     this.say('Đã archive dữ liệu cũ sang cold storage. IO tạm thời tăng.', 'info');
   }
+
+  // Quay DB về snapshot cuối: mất các ghi sau snapshot (RPO), DB reboot (RTO), hết hỏng dữ liệu.
+  c_restore(p, m) {
+    const e = this.struct(m.id, ['db']);
+    if (!e || !this.near(p, e)) return this.say('Lại gần hơn để khôi phục.', 'warn', p.pid);
+    if (e.rb) return;
+    if (e.crashed) return this.say('DB đang crash: sửa & reboot trước rồi mới khôi phục được.', 'warn', p.pid);
+    const st = this.flow.st(e);
+    if (e.cfg.backup === 'off') return this.say('Backup đang tắt nên không có snapshot nào để khôi phục. Replica không thay thế được backup.', 'warn', p.pid);
+    if (!this.flow.hasSnapshot(e)) return this.say('Chưa có snapshot nào hoàn tất để khôi phục.', 'warn', p.pid);
+    if (!st.corrupt) return this.say('Dữ liệu DB này không bị hỏng: khôi phục sẽ chỉ làm mất các ghi sau snapshot cuối.', 'warn', p.pid);
+    const lost = this.flow.atRisk(e);
+    st.corrupt = null;
+    st.diskLoss = false;
+    st.sinceBackup = 0;
+    this.startReboot(e, p.role === 'dba' ? DATALOSS.restore / 2 : DATALOSS.restore);
+    this.flow.dirty = true;
+    this.director.onRestore(e, lost);
+  }
+
+  // Ack alert đang kêu (không có m.node thì ack hết). Chỉ người on-call ack được, trừ khi alert đã escalate.
+  c_ack(p, m) { this.alerts.ack(p, m.node); }
+  c_oncall(p) { this.alerts.take(p); }
 
   c_install(p, m) {
     const e = this.struct(m.id, ['gateway', 'lb']);
@@ -1023,7 +1052,7 @@ export class World {
       const S = STRUCTS[s.k];
       if (S.light && s.on) this.lights.push({ x: s.x, y: s.y, r: S.light });
       if (s.k === 'stove' && s.cooking) this.lights.push({ x: s.x, y: s.y, r: 90 });
-      if (S.monitor && s.on) this.monitors.push({ x: s.x, y: s.y, r: S.monitor });
+      if (S.monitor && s.on) this.monitors.push({ x: s.x, y: s.y, r: S.monitor, alert: s.cfg ? s.cfg.alert : 'off' });
       cx += COMPLEX[s.k] || 0;
       if (s.cfg) {
         const c = s.cfg;
@@ -1056,6 +1085,7 @@ export class World {
       if (s.hp < s.mhp * 0.001 && COMP[s.k] && !s.crashed) this.crash(s, 'gremlin');
     }
     this.flow.step(dt);
+    this.alerts.step();
     this.director.step(dt);
     stepTips(this);
   }
@@ -1109,6 +1139,7 @@ export class World {
       this.emit({ t: 'victory', day: this.clock.day, users: this.users });
     }
     this.say(`Ngày ${this.clock.day} bắt đầu — mùa ${SEASON_VI[this.clock.season]}.`, 'info');
+    this.alerts.rotate();
     if (this.clock.season !== prev.season) this.director.onSeason(this.clock.season);
     // gremlin biến mất lúc bình minh
     for (const m of [...this.mobs]) if (m.k === 'gremlin') { this.fx('poof', m.x, m.y); this.removeEnt(m); }
@@ -1135,22 +1166,30 @@ export class World {
       v: 1, seed: this.seed, time: this.time, tick: this.tick, nextId: this.nextId, users: this.users, sat: this.sat,
       kp: this.kp, learned: [...this.learned], codex: [...this.codex], tipsSeen: [...this.tipsSeen], stash, growthBoostAt: this.growthBoostAt, peak: this.peakUsers,
       dayStat: this.dayStat, log: this.log.slice(-30), history: this.history.slice(-120), won: this.won,
-      director: this.director.toSave(), flow: this.flow.toSave(),
+      director: this.director.toSave(), flow: this.flow.toSave(), alerts: this.alerts.toSave(),
       ents: ents.filter((e) => e.k !== 'player').map((e) => JSON.parse(JSON.stringify(e, keep))),
     });
   }
 
   load(raw) {
     const s = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (s.seed !== undefined) {
+      this.seed = s.seed >>> 0;
+      this.rng = mulberry32(this.seed ^ 0x5bd1e995);
+      this.tiles = genTiles(this.seed);
+    }
     this.time = s.time; this.tick = s.tick; this.nextId = s.nextId; this.users = s.users; this.sat = s.sat ?? 100;
     this.codex = new Set(s.codex);
     if (s.kp === undefined) { this.learned = new Set(RECIPES.filter((r) => r.kp).map((r) => r.id)); this.kp = 0; } // bản lưu cũ: giữ mọi công thức đã mở
-    else { this.kp = s.kp; this.learned = new Set(s.learned); } this.tipsSeen = new Set(s.tipsSeen); this.stash = s.stash || {};
-    this.growthBoostAt = s.growthBoostAt ?? -999; this.peakUsers = s.peak || s.users; this.dayStat = s.dayStat;
+    else { this.kp = s.kp; this.learned = new Set(s.learned); } this.tipsSeen = new Set(s.tipsSeen); this.stash = Object.assign(Object.create(null), s.stash);
+    this.growthBoostAt = s.growthBoostAt ?? -999; this.peakUsers = s.peak || s.users; this.dayStat = s.dayStat ?? this.dayStat;
     this.log = s.log || []; this.history = s.history || []; this.won = !!s.won;
     this.clock = clockAt(this.time);
     for (const e of s.ents) {
+      if (e.k === 'bot') continue; // bot DDoS thuộc về sự cố đang chạy, sự cố không được lưu
       e._cls = RESOURCES[e.k] ? 'res' : STRUCTS[e.k] ? 'struct' : MOBS[e.k] ? 'mob' : e.k;
+      if (e.k === 'db' && e.cfg.backup === undefined) e.cfg.backup = 'off'; // bản lưu cũ chưa có backup
+      if (e.k === 'lantern' && !e.cfg) e.cfg = { alert: 'normal' }; // bản lưu cũ: đèn chưa có cấu hình alert
       this.ents.set(e.id, e);
       if (e._cls === 'struct') this.structs.add(e);
       else if (e._cls === 'mob') this.mobs.add(e);
@@ -1163,5 +1202,6 @@ export class World {
     }
     this.director.load(s.director);
     this.flow.load(s.flow);
+    this.alerts.load(s.alerts);
   }
 }

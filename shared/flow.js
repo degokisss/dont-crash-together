@@ -1,6 +1,6 @@
 // Mô phỏng luồng request qua đồ thị component (chạy mỗi 0.5 giây).
 // Mô hình: lưu lượng fluid + hàng đợi M/M/1 đơn giản + retry + circuit breaker + replication + quorum.
-import { COMP, COST, CLS, TRAFFIC_MIX, RPS_PER_USER, SLO, STRUCTS } from './data.js';
+import { COMP, COST, CLS, TRAFFIC_MIX, RPS_PER_USER, SLO, STRUCTS, BACKUP, DATALOSS } from './data.js';
 import { clamp, dist } from './util.js';
 
 const CLIENT_TIMEOUT_MS = 3000;
@@ -11,6 +11,10 @@ const SEASON_DEMAND = { autumn: 1.0, winter: 0.9, spring: 1.15, summer: 1.35 };
 const BOT_RPS = 20;
 
 const z4 = () => [0, 0, 0, 0];
+// Trạng thái backup của một DB (nằm trong _st nên được lưu cùng entity):
+//   lastBackupAt: thời điểm snapshot cuối hoàn tất (null = chưa có), snapUntil: snapshot đang chạy tới lúc này (0 = rảnh),
+//   corrupt: null | { at } — dữ liệu đang hỏng từ lúc `at` (sự cố dataloss). sinceBackup (số ghi kể từ snapshot cuối) là phơi nhiễm RPO.
+const backupState = () => ({ lastBackupAt: null, snapUntil: 0, corrupt: null });
 
 export class Flow {
   constructor(w) {
@@ -25,7 +29,10 @@ export class Flow {
   }
 
   toSave() { return { carry: this.carry }; }
-  load(s) { if (s) this.carry = s.carry || [0, 0, 0]; }
+  load(s) {
+    if (s) this.carry = s.carry || [0, 0, 0];
+    for (const n of this.w.structs) if (n.k === 'db' && n._st) n._st = { ...backupState(), ...n._st }; // bản lưu cũ chưa có trạng thái backup
+  }
 
   get mods() { return this.w.director.mods; }
 
@@ -34,6 +41,7 @@ export class Flow {
     if (!n._st) {
       n._st = { backlog: 0, warm: 1, mem: 0, seen: {}, util: 0 };
       if (n.k === 'db') Object.assign(n._st, { disk: 0.12, leader: n.id, lag: 0.2, unrep: 0, since: 0, sinceBackup: 0, conflicts: 0, split: false });
+      if (n.k === 'db') Object.assign(n._st, backupState());
       if (n.k === 'queue') Object.assign(n._st, { q: 0, lag: 0 });
       if (n.k === 'cache') Object.assign(n._st, { warm: 0, sync: 1, ttlT: 0, crush: 0 });
       if (n.k === 'cdn') n._st.warm = 0;
@@ -277,7 +285,7 @@ export class Flow {
     this.process(n, c, dt);
     const targets = this.linked(n, ['app']).filter((t) => this.believed(n, t, HC_DELAY.lb));
     // autoscaler
-    if (n.asg && targets.length) {
+    if (n.asg && c.up && targets.length) {
       const tmpl = targets[0];
       let l = 0, cp = 0;
       for (const t of targets) { const x = this.ctx.get(t.id); if (x) { l += x.load; cp += this.capOf(t); } }
@@ -424,14 +432,15 @@ export class Flow {
     if (seemsDown) {
       st.since = st.since || now;
       if (now - st.since >= FAILOVER_DELAY && cfg.failover !== 'off') {
-        const cands = !leaderUp ? reps.filter((r) => r !== leaderEnt && reach(r)) : isolated;
+        const cands = !leaderUp ? members.filter((m) => m !== leaderEnt && (m === n ? dbUp : reach(m))) : isolated;
         // phía của ứng viên có đa số không? (quorum cần > một nửa tổng số node)
         const side = !leaderUp ? members.filter((m) => m !== leaderEnt && (m === n ? dbUp : reach(m))).length : cands.length;
         const ok = cfg.failover === 'auto' || side > members.length / 2;
         if (cands.length && ok) {
           const nl = cands[0];
           const lag = cfg.repl === 'sync' ? 0 : st.lag;
-          const lost = Math.round(wsum * lag + (st.diskLoss ? st.sinceBackup * 0.05 : 0));
+          const lost = Math.round(wsum * lag + (st.diskLoss ? st.sinceBackup * DATALOSS.loss : 0));
+          st.diskLoss = false;
           st.leader = nl.id;
           st.since = 0;
           leaderEnt = nl;
@@ -497,7 +506,10 @@ export class Flow {
     }
     const archived = st.archUntil > now ? 80 : 0;
     st.extraLoad += archived;
+    this.backup(n, st, dbUp, now);
+    if (st.snapUntil) st.extraLoad += BACKUP[cfg.backup].io;
     this.process(n, c, dt);
+    if (st.corrupt) c.okSelf *= 1 - DATALOSS.fail; // lỗi dữ liệu đã được replicate: replica cũng hỏng như vậy (xem replica())
     // đĩa
     if (dbUp) {
       const GB = COMP.db.disk[Math.min(n.tier, 3) - 1];
@@ -526,8 +538,38 @@ export class Flow {
     if (analytics && analytics.until > now && upReps[0]) this.st(upReps[0]).extraLoad += analytics.load;
   }
 
+  // Snapshot định kỳ: chạy `run` giây (tốn IO), xong thì chiếm đĩa và đặt lại sinceBackup. Tắt backup = xoá mọi snapshot.
+  // Dữ liệu đang hỏng thì không snapshot, để không ghi đè điểm khôi phục sạch bằng dữ liệu hỏng.
+  backup(n, st, dbUp, now) {
+    const b = BACKUP[n.cfg.backup];
+    if (!b.every) { st.lastBackupAt = null; st.snapUntil = 0; }
+    else if (!dbUp || st.corrupt) st.snapUntil = 0;
+    else if (st.snapUntil) {
+      if (now >= st.snapUntil) {
+        st.disk = clamp(st.disk + b.disk * (60 / COMP.db.disk[Math.min(n.tier, 3) - 1]) * (n.cfg.retention ? 0.4 : 1), 0, 1);
+        st.lastBackupAt = now;
+        st.sinceBackup = 0;
+        st.snapUntil = 0;
+      }
+    } else if (st.lastBackupAt === null || now - st.lastBackupAt >= b.every - b.run) st.snapUntil = now + b.run;
+    // Không có snapshot để khôi phục: sau DATALOSS.rebuild giây cả đội tự dựng lại dữ liệu từ đầu và mất mọi ghi chưa được bảo vệ.
+    if (st.corrupt && !this.hasSnapshot(n) && now - st.corrupt.at >= DATALOSS.rebuild) {
+      const lost = this.atRisk(n);
+      st.corrupt = null;
+      st.sinceBackup = 0;
+      this.w.director.onRestore(n, lost, true);
+    }
+  }
+
+  // Có điểm khôi phục không? (khôi phục chỉ hỏi câu này, không quan tâm snapshot nằm ở đâu)
+  hasSnapshot(db) { return db.cfg.backup !== 'off' && this.st(db).lastBackupAt !== null; }
+  // Số bản ghi sẽ mất nếu phải quay về snapshot cuối (RPO thực tế)
+  atRisk(db) { return Math.round(this.st(db).sinceBackup * DATALOSS.loss); }
+
   replica(n, c, dt) {
     this.process(n, c, dt);
+    const db = this.clusterOf(n);
+    if (db && this.st(db).corrupt) c.okSelf *= 1 - DATALOSS.fail; // replica sao chép cả dữ liệu hỏng: không "chữa" được
     c.term = [0, 1, 1, 1];
   }
 
@@ -621,7 +663,10 @@ export class Flow {
         case 'cache': m.hit = round(st.hit || 0, 2); m.warm = round(st.warm, 2); if (st.crushed) m.crush = 1; break;
         case 'cdn': m.hit = round(st.hit || 0, 2); break;
         case 'queue': m.q = Math.round(st.q); m.lag = round(st.lag, 1); m.full = round(st.fullness || 0, 2); break;
-        case 'db': m.disk = round(st.disk, 3); m.lag = round(st.lag, 1); m.why = st.why || ''; m.split = st.split ? 1 : 0; m.writable = st.writable ? 1 : 0; break;
+        case 'db':
+          m.disk = round(st.disk, 3); m.lag = round(st.lag, 1); m.why = st.why || ''; m.split = st.split ? 1 : 0; m.writable = st.writable ? 1 : 0;
+          m.snapAge = st.lastBackupAt === null ? null : Math.round(w.time - st.lastBackupAt); m.rpo = this.atRisk(n); m.snap = st.snapUntil ? 1 : 0; m.corrupt = st.corrupt ? 1 : 0;
+          break;
         case 'replica': m.lag = round(st.lag || 0, 1); break;
         case 'lb': m.asg = st.asgU !== undefined ? round(st.asgU, 2) : undefined; m.shares = st.shares; break;
         case 'gateway': m.limited = Math.round(st.limited || 0); m.blocked = Math.round(st.blocked || 0); break;
