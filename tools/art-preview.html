@@ -57,7 +57,7 @@ for (const k of [...Object.keys(STRUCTS), ...Object.keys(RESOURCES), 'heart','cu
 const BASE = { tier: 1, hp: 100, mhp: 100, on: true };
 const base = (k, extra = {}) => ({ k, w: STRUCTS[k].w, h: STRUCTS[k].h, ...BASE, mhp: STRUCTS[k].hp, hp: STRUCTS[k].hp, ...extra });
 const EX = {
-  app: [['virt:2', { virt: 2 }], ['bad', { bad: true }]],
+  app: [['virt:2', { virt: 2 }], ['bad', { bad: true }], ['cont', { cont: true }], ['cont virt:2', { cont: true, virt: 2 }]],
   lb: [['lc+asg', { algo: 'lc', asg: true }], ['hash', { algo: 'hash' }]],
   db: [['shards4 leader disk.9', { shards: 4, leader: true, disk: 0.9 }], ['shards2', { shards: 2, disk: 0.3 }]],
   replica: [['leader', { leader: true }]],
@@ -65,6 +65,8 @@ const EX = {
   generator: [['fuel full', { fuel: 100, mf: 100 }], ['fuel 40%', { fuel: 40, mf: 100 }], ['fuel 0', { fuel: 0, mf: 100 }]],
   turret: [['fire', { fire: true }]],
   stove: [['cooking', { cooking: 'coffee' }], ['done', { done: true, cooking: 'stew' }]],
+  s3: [['tier2 on', { tier: 2 }]],
+  k8s: [['links', { links: [] }]],
 };
 for (const k of Object.keys(STRUCTS)) {
   const s = STRUCTS[k];

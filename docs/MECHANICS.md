@@ -39,17 +39,20 @@ Mỗi component có **công suất** (đơn vị công việc/s) và chi phí th
 ### Các component
 | Component | Vai trò & hành vi mô phỏng | Cấu hình |
 |---|---|---|
-| **API Gateway** | Điểm vào. Chỉ chuyển tiếp tới **một** đích khoẻ đầu tiên trong danh sách cáp (failover thứ tự). Lớp *tĩnh* đi qua CDN nếu có. | **Rate limit** (req/s, loại bỏ cả lớp hợp lệ tương ứng), **WAF** (cần module, chặn ~95% request độc hại) |
-| **CDN** | Phục vụ lớp tĩnh ở edge, hit ~92% sau khi ấm (warm-up). Miss chuyển về origin (cáp đầu tiên). | — |
+| **API Gateway** | Điểm vào. Chỉ chuyển tiếp tới **một** đích khoẻ đầu tiên trong danh sách cáp (failover thứ tự). Lớp *tĩnh* đi qua CDN nếu có, nếu không thì thẳng tới **S3** nếu có. | **Rate limit** (req/s, loại bỏ cả lớp hợp lệ tương ứng), **WAF** (cần module, chặn ~95% request độc hại) |
+| **CDN** | Phục vụ lớp tĩnh ở edge, hit ~92% sau khi ấm (warm-up). Miss chuyển về origin (đích khoẻ đầu tiên trong cáp: S3, K8s, LB hoặc App). | — |
 | **Load Balancer** | Chia tải cho nhiều App. Phát hiện node chết sau ~4 s (health check) → trong khoảng đó vẫn gửi vào node chết → lỗi. | Thuật toán: **Round-robin** (chia đều bất kể sức mạnh), **Least-connections** (theo công suất còn trống), **Hash/sticky** (có skew: 1 node nhận nhiều hơn). **Autoscaler** (module): thêm instance ảo khi util > 70% (khởi động 15 s), tốn điện. |
-| **App Server** | Xử lý logic. Đọc → Cache (nếu có cáp tới cache) rồi DB; ghi → Queue (nếu có) hoặc DB. Nhiều App không có LB = chỉ App đầu tiên nhận tải. | Tier 1–3 (**scale up cần reboot** ~10 s), **retries** 0–3, **backoff+jitter**, **circuit breaker** (mở khi >50% lỗi từ downstream; fail fast, thăm dò 5%), **Deploy** (rủi ro 30% bản lỗi → lỗi ~40% request của node đó, không thấy nếu không giám sát), **Rollback**, **Restart** |
+| **Kubernetes Cluster** (2×1, 4 W, độ phức tạp +6) | Ingress + scheduler cho các App: chia tải theo công suất còn trống, readiness probe phát hiện pod chết sau ~1 s (LB ~4 s). Với App **đã đóng container** (Module Docker): **tự chữa** (pod crash/OOM được dựng lại sau ~6 s, không cần kỹ sư), **HPA** (thêm instance khi util nhóm > 70%, khởi động ~8 s, tối đa +6; bớt khi < 30% trong 30 s), **rolling update** (deploy chỉ down ~1 s) và **tự rollback** bản deploy lỗi sau ~10 s. App chưa đóng container chỉ được chia tải. Control plane là SPOF và không tự chữa. Chi phí xử lý 0.4/request (LB: 0.3). | Công thức ở Chaos Lab, 5 KP |
+| **App Server** | Xử lý logic. Đọc → Cache (nếu có cáp tới cache) rồi DB; ghi → Queue (nếu có) hoặc DB. Nhiều App không có LB/K8s = chỉ App đầu tiên nhận tải. | Tier 1–3 (**scale up cần reboot** ~10 s), **retries** 0–3, **backoff+jitter**, **circuit breaker** (mở khi >50% lỗi từ downstream; fail fast, thăm dò 5%), **Deploy** (rủi ro 30% bản lỗi → lỗi ~40% request của node đó, không thấy nếu không giám sát), **Rollback**, **Restart**, **Module Docker** (container: reboot/restart nhanh gấp đôi, rủi ro deploy lỗi 30% → 12%, công suất −4% do overhead runtime, độ phức tạp +1) |
 | **Cache** | Read-through: hit trả ngay, miss chuyển tới DB. Hit ratio phụ thuộc tier & TTL. Khởi động nguội mất ~20 s mới ấm. Không jitter → mọi key hết hạn cùng lúc mỗi chu kỳ TTL → **stampede** (hit ≈ 10% trong ~3 s). | TTL 10/30/60 s (dài = hit cao hơn nhưng dữ liệu cũ hơn), **Jitter**, **Request coalescing**, tier |
 | **Message Queue** | Nhận ghi nhanh (ack sớm), xả dần vào DB theo công suất DB còn trống (backpressure). Backlog đầy → từ chối ghi. Đo **lag**. | tier |
-| **Database** | Công suất đọc/ghi chung (đọc cost 2, ghi cost 5). Đọc có thể chia cho replica. Ghi chỉ vào **leader**. Đĩa đầy → ghi thất bại. | Tier, **shards** (1–4; có skew nên không scale tuyến tính), **sync/async replication**, **failover** (tắt / tự động / quorum), **retention** (giảm tốc độ đầy đĩa), **key salting** (giảm skew), **Backup** (tắt / hằng ngày / hằng giờ), **Archive** (dọn đĩa), **Khôi phục** từ backup |
+| **Object Storage (S3)** | Phục vụ lớp *tĩnh* như origin: chi phí 0.1/request (App: 1), công suất 6000, độ trễ nền 45 ms (chậm hơn CDN edge ~8 ms). Nếu chết, nơi gọi chuyển sang origin kế tiếp sau health check ~3 s. Đích **backup** của DB (xem dưới). | Công thức ở Phòng lab, 2 KP |
+| **Database** | Công suất đọc/ghi chung (đọc cost 2, ghi cost 5). Đọc có thể chia cho replica. Ghi chỉ vào **leader**. Đĩa đầy → ghi thất bại. | Tier, **shards** (1–4; có skew nên không scale tuyến tính), **sync/async replication**, **failover** (tắt / tự động / quorum), **retention** (giảm tốc độ đầy đĩa), **key salting** (giảm skew), **Backup** (tắt / hằng ngày / hằng giờ), **Archive** (dọn đĩa), **Khôi phục** từ backup, **cáp tới S3** (backup mỗi 30 s, đĩa đầy chậm hơn 25%) |
 | **Read Replica** | Nhận đọc từ DB primary, độ trễ sao chép tăng khi primary quá tải. Có thể được thăng cấp làm leader khi primary chết. | tier |
 
 ### Độ bền dữ liệu
 Khi leader chết: ghi chưa được sao chép (async) bị **mất**. Sync replication không mất dữ liệu nhưng ghi thất bại nếu replica không với tới được (CP).
+
 **Split-brain**: partition + failover tự động + async → hai leader nhận ghi → khi nối lại, xung đột = mất dữ liệu. **Quorum** mode chỉ thăng cấp khi đa số node với tới nhau (cần ≥ 3 node: primary + 2 replica).
 
 ### Backup & khôi phục
@@ -64,8 +67,9 @@ Replica sao chép cả lỗi lẫn lệnh xoá nhầm nên **không thay đượ
 - Snapshot đầu tiên chạy ngay khi bật Backup. Mỗi snapshot hoàn tất đặt lại bộ đếm **ghi chưa được bảo vệ**. Số bản ghi có nguy cơ mất (**RPO** thực tế) = ghi chưa được bảo vệ × 0,05; thẻ DB hiện "Backup gần nhất" và "Chưa được bảo vệ". Khi Backup tắt, mọi ghi từ đầu game đều chưa được bảo vệ.
 - Chi phí: mỗi snapshot chiếm thêm đĩa (chia theo dung lượng đĩa của tier; **Retention** giảm còn 40%) và cộng IO vào DB lúc chạy, nên backup dày hơn tốn đĩa và IO hơn. Snapshot dừng khi DB đang chết/reboot hoặc dữ liệu đang hỏng (không ghi đè điểm khôi phục sạch bằng dữ liệu hỏng).
 - Sự cố `dataloss` đánh dấu một DB là **hỏng dữ liệu**: 40% request đọc/ghi thất bại, cả trên DB lẫn replica. Failover sang replica **không** chữa được vì dữ liệu hỏng đã được sao chép.
-- **Khôi phục từ backup** (lệnh `c_restore`, đứng gần DB) cần Backup bật, đã có snapshot và dữ liệu đang hỏng. DB reboot 12 s (**DBA** 6 s, **RTO**), mất các ghi sau snapshot cuối (tính vào dữ liệu mất và trừ người dùng như failover mất dữ liệu), hết hỏng và sự cố kết thúc. Không có snapshot: khôi phục bị từ chối, và sau 60 s cả đội tự dựng lại dữ liệu từ đầu, mất toàn bộ ghi chưa được bảo vệ.
+- **Khôi phục từ backup** (lệnh `c_restore`, đứng gần DB) cần đã có snapshot (từ Backup hoặc từ cáp S3) và dữ liệu đang hỏng. DB reboot 12 s (**DBA** 6 s, **RTO**), mất các ghi sau snapshot cuối (tính vào dữ liệu mất và trừ người dùng như failover mất dữ liệu), hết hỏng và sự cố kết thúc. Không có snapshot: khôi phục bị từ chối, và sau 60 s cả đội tự dựng lại dữ liệu từ đầu, mất toàn bộ ghi chưa được bảo vệ.
 - Crash DB kèm hỏng đĩa (30% số lần crash DB) dùng cùng công thức, nên có snapshot gần đây thì mất ít hơn nhiều.
+- **Backup sang S3**: DB có cáp tới Object Storage (còn sống, không bị cắt) cũng snapshot mỗi 30 s, độc lập với cấu hình Backup: bản chụp nằm ở S3 nên tắt Backup không xoá được. Dữ liệu cold offload sang S3 còn làm đĩa đầy chậm hơn 25%. Snapshot S3 cũng đặt lại bộ đếm ghi chưa được bảo vệ, tính là điểm khôi phục (`c_restore` dùng snapshot mới nhất của hai nguồn), và cũng không chạy khi dữ liệu đang hỏng. Không có Backup lẫn S3, "dữ liệu chưa backup" tích luỹ mãi.
 
 ### Cảnh báo & on-call
 Đèn giám sát có cấu hình **Mức cảnh báo** (`lantern.cfg.alert`, bảng `ALERT` trong `shared/data.js`, mặc định **Vừa**). Mỗi 0,5 s đèn đánh giá số liệu của từng component trong vùng của nó (đúng số liệu bạn thấy ở inspector). Component ngoài mọi vùng đèn, hoặc trong vùng đèn đang mất điện/để Tắt, **không bao giờ page**. Component nằm trong nhiều vùng dùng đèn nhạy nhất đang bật alert.
@@ -93,23 +97,23 @@ Replica sao chép cả lỗi lẫn lệnh xoá nhầm nên **không thay đượ
 ## Sự cố (director chọn theo mùa, tiền điều kiện kiến trúc và độ khó tăng theo ngày)
 | id | Tên | Hiệu ứng | Biện pháp |
 |---|---|---|---|
-| `spike` | Traffic spike / Thundering herd | Nhu cầu ×2–4,5 (tăng theo ngày) trong ~50 s | Scale-out + LB, autoscaler, rate limit (load shedding), queue, CDN, cache |
+| `spike` | Traffic spike / Thundering herd | Nhu cầu ×2–4,5 (tăng theo ngày) trong ~50 s | Scale-out + LB/Kubernetes, autoscaler/HPA, rate limit (load shedding), queue, CDN/S3, cache |
 | `stampede` | Cache stampede | Hit ratio cache về ~10% trong ~12 s | Jitter TTL, request coalescing, DB đủ mạnh/replica |
-| `crash` | Node crash | Một component ngẫu nhiên chết tới khi reboot | Dư thừa (N+1), LB health check, failover DB, runbook reboot nhanh |
-| `leak` | Rò bộ nhớ | Một App tăng mem tới OOM | Giám sát, restart định kỳ/rolling, deploy bản vá |
+| `crash` | Node crash | Một component ngẫu nhiên chết tới khi reboot | Dư thừa (N+1), LB health check, failover DB, backup S3, runbook reboot nhanh, Kubernetes tự chữa App đã đóng container |
+| `leak` | Rò bộ nhớ | Một App tăng mem tới OOM | Giám sát, restart định kỳ/rolling, deploy bản vá, Kubernetes dựng lại pod bị OOM-kill |
 | `ddos` | DDoS / botnet | Bot vật lý + traffic độc hại ∝ số bot | Tháp tường lửa, WAF, rate limit, giết bot |
 | `partition` | Network partition | Một cáp bị cắt ~25 s | Đường dự phòng, sync vs async, quorum |
 | `hotkey` | Hot key / hot shard | Skew DB & LB-hash tăng | Cache, least-connections, key salting / consistent hashing |
-| `diskfull` | Log nổ đĩa | Đĩa DB tăng vọt | Retention, Archive, giám sát dung lượng |
-| `baddeploy` | Deploy lỗi | Bản deploy mới lỗi | Deploy từng node (canary), giám sát, rollback |
+| `diskfull` | Log nổ đĩa | Đĩa DB tăng vọt | Retention, Archive, offload sang S3, giám sát dung lượng |
+| `baddeploy` | Deploy lỗi | Bản deploy mới lỗi | Deploy từng node (canary), container (30% → 12% rủi ro), giám sát, rollback; Kubernetes rolling update + tự rollback |
 | `outage` | Mất điện lưới | Một máy phát bị sập 30 s | Hai máy phát chồng lấn, phân tán component |
 | `analytics` | Truy vấn báo cáo nặng | Tải DB tăng đột biến (trên replica nếu có) | Cô lập workload bằng read replica |
 | `dataloss` | Xóa nhầm dữ liệu (DROP TABLE) | Từ ngày 6: một DB hỏng dữ liệu, 40% đọc/ghi lỗi tới khi khôi phục; replica và failover không chữa được | Backup + Khôi phục, giám sát DB để phát hiện sớm, đừng coi replica là backup |
 
 ## Điểm kiến thức (KP)
-Công thức nâng cao (Cache, Queue, CDN, Replica, Tháp tường lửa, Module WAF, Chaos Lab, Module Autoscaler) phải được **học** bằng KP trước khi chế/đặt (vẫn cần đứng gần Phòng lab). KP dùng chung cả đội.
+Công thức nâng cao (Cache, Queue, CDN, Replica, S3, Module Docker, Tháp tường lửa, Module WAF, Chaos Lab, Module Autoscaler, Kubernetes) phải được **học** bằng KP trước khi chế/đặt (vẫn cần đứng gần Phòng lab; Kubernetes và Module Autoscaler cần Chaos Lab). KP dùng chung cả đội.
 - Khởi đầu 3 KP. +1 mỗi mục sổ tay mới mở khoá. Sau mỗi post-mortem: +1 cho mỗi biện pháp phòng thủ đạt, +2 nếu đạt đủ. Game day chỉ thưởng (một nửa) lần đầu mỗi loại sự cố.
-- Chi phí: Cache/Queue 2, CDN/Replica/Tháp/WAF 3, Chaos Lab/Autoscaler 4. Bản lưu cũ giữ nguyên các công thức đã có.
+- Chi phí: Cache/Queue/S3/Module Docker 2, CDN/Replica/Tháp/WAF 3, Chaos Lab/Autoscaler 4, Kubernetes 5. Bản lưu cũ giữ nguyên các công thức đã có.
 
 ## Theo dõi một request
 Trong Sơ đồ (M) bấm Tĩnh/Đọc/Ghi để gửi một request mẫu: server lấy mẫu một đường đi theo đúng xác suất của mô phỏng hiện tại (chia tải, cache hit/miss, drop do quá tải, retry, breaker, cáp đứt, rate limit...) và hiện từng bước với thời gian cộng dồn. Kèm mẫu 60 request (tỉ lệ thành công, p50/p99, lỗi hay gặp nhất) và gợi ý sổ tay. Node ngoài vùng Đèn giám sát chỉ hiện "???".

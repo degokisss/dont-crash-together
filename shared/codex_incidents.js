@@ -45,13 +45,14 @@ export const CODEX_INCIDENTS = [
     pros: [], cons: [],
     real: 'Netflix xây Chaos Monkey (khoảng 2011) để chủ động tắt instance ngẫu nhiên trong production, buộc dịch vụ phải chịu được mất node.',
     tryIt: 'Chạy crash trên monolith, rồi thêm App thứ hai sau LB và chạy lại; so sánh thời gian lỗi.',
-    see: ['concept-spof', 'concept-health-checks', 'comp-lb', 'comp-replica', 'concept-chaos'],
+    see: ['concept-spof', 'concept-health-checks', 'comp-lb', 'comp-replica', 'concept-chaos', 'comp-k8s', 'comp-s3'],
     symptoms: ['Một component chuyển sang trạng thái chết/đỏ trên sơ đồ', 'Error rate nhảy lên ngay, tỷ lệ tương ứng phần tải mà node đó nhận', 'Trong ~4 s đầu LB vẫn gửi vào node chết', 'Với DB: ghi thất bại hoặc ghi chưa sao chép có thể bị mất'],
     mitigations: [
       { name: 'Dư thừa (N+1)', how: 'Chạy ít nhất hai App sau LB để mất một node vẫn còn năng lực.', tradeoff: 'Tốn chi phí và điện; mỗi node thêm tăng độ phức tạp.' },
       { name: 'Load Balancer health check', how: 'LB loại node chết khỏi vòng chia tải sau ~4 s.', tradeoff: 'Có cửa sổ phát hiện; check quá nhạy gây flapping.' },
       { name: 'Failover DB', how: 'Bật failover tự động hoặc quorum, có replica để thăng cấp làm leader.', tradeoff: 'Async có thể mất ghi chưa sao chép; tự động có nguy cơ split-brain.' },
-      { name: 'Restart', how: 'Dùng runbook reboot nhanh node chết.', tradeoff: 'Cần người trực và quan sát; không sửa nguyên nhân gốc.' }
+      { name: 'Restart', how: 'Dùng runbook reboot nhanh node chết.', tradeoff: 'Cần người trực và quan sát; không sửa nguyên nhân gốc.' },
+      { name: 'Kubernetes self-healing', how: 'App container hoá (Module Docker) bị crash/OOM-kill được Kubernetes restart tự động ~6 s sau, và pod chết bị loại khỏi định tuyến sau ~1 s nhờ readiness probe.', tradeoff: 'Control plane là SPOF và không tự chữa; độ phức tạp +6, 4 W điện; App không container hoá không được chữa.' },
     ]
   },
   {
@@ -62,13 +63,14 @@ export const CODEX_INCIDENTS = [
     pros: [], cons: [],
     real: 'Nhiều dịch vụ chạy lâu (JVM, Node, Ruby) phải restart xoay vòng định kỳ như biện pháp tạm cho tới khi vá được leak; đây là thực hành SRE phổ biến.',
     tryIt: 'Đặt Đèn giám sát cạnh App, quan sát đường mem khi leak; restart trước khi chạm OOM.',
-    see: ['concept-observability', 'inc-crash', 'concept-blast-radius', 'comp-lantern'],
+    see: ['concept-observability', 'inc-crash', 'concept-blast-radius', 'comp-lantern', 'comp-k8s', 'comp-docker'],
     symptoms: ['Đường mem của một App dốc đều lên', 'p99 xấu dần trước khi chết', 'Node bất ngờ chết (OOM) rồi hết lỗi sau reboot', 'Ngoài vùng sáng: không thấy gì cho tới khi crash'],
     mitigations: [
       { name: 'Giám sát (Đèn giám sát)', how: 'Giữ App trong vùng sáng để thấy mem tăng sớm.', tradeoff: 'Tốn điện và công vận hành; vẫn cần người xem dashboard.' },
       { name: 'Restart', how: 'Restart node trước khi chạm OOM, tốt nhất xoay vòng từng node sau LB.', tradeoff: 'Chỉ trì hoãn; cần dư thừa để không mất dịch vụ lúc restart.' },
       { name: 'Deploy bản vá', how: 'Triển khai bản sửa lỗi leak, từng node một.', tradeoff: 'Deploy có rủi ro bản lỗi (30% trong game).' },
-      { name: 'Rollback', how: 'Nếu leak do bản mới, rollback về bản trước.', tradeoff: 'Mất các thay đổi tốt trong bản đó.' }
+      { name: 'Rollback', how: 'Nếu leak do bản mới, rollback về bản trước.', tradeoff: 'Mất các thay đổi tốt trong bản đó.' },
+      { name: 'Kubernetes self-healing', how: 'App container hoá (Module Docker) bị OOM-kill được Kubernetes restart tự động ~6 s sau, không cần kỹ sư.', tradeoff: 'Chỉ che triệu chứng: leak lặp lại; cần độ phức tạp +6 và 4 W điện.' },
     ]
   },
   {
@@ -130,11 +132,12 @@ export const CODEX_INCIDENTS = [
     pros: [], cons: [],
     real: 'Đầy đĩa do log là nguyên nhân sự cố rất phổ biến; sổ tay SRE của Google khuyến nghị giám sát dung lượng và cảnh báo sớm theo tốc độ tăng, không chỉ theo ngưỡng.',
     tryIt: 'Đặt retention thấp, chạy diskfull, và xem đĩa tăng chậm hơn; rồi bấm Archive.',
-    see: ['comp-db', 'concept-observability', 'concept-capacity-cost', 'comp-lantern'],
+    see: ['comp-db', 'concept-observability', 'concept-capacity-cost', 'comp-lantern', 'comp-s3'],
     symptoms: ['Thanh dung lượng đĩa DB tăng dốc bất thường', 'Ghi thất bại khi đĩa đạt 100%', 'Đọc vẫn bình thường (chỉ ghi lỗi)', 'Error rate lớp ghi tăng trong khi lớp đọc ổn'],
     mitigations: [
       { name: 'Retention', how: 'Đặt chính sách giữ dữ liệu ngắn hơn để giảm tốc độ đầy.', tradeoff: 'Mất dữ liệu cũ hữu ích cho điều tra.' },
       { name: 'Archive', how: 'Chuyển dữ liệu cũ sang lưu trữ lạnh để giải phóng đĩa.', tradeoff: 'Mất công/chi phí; dữ liệu archive truy cập chậm.' },
+      { name: 'Nối DB tới S3', how: 'DB liên kết với Object Storage offload dữ liệu lạnh nên đĩa đầy chậm hơn 25%, đồng thời có snapshot backup mỗi 30 s.', tradeoff: 'Tốn điện và thêm một thành phần (SPOF cho phần tĩnh nếu S3 còn là origin).' },
       { name: 'Giám sát dung lượng', how: 'Đặt DB trong vùng sáng và cảnh báo trước khi đầy.', tradeoff: 'Tốn điện và công theo dõi.' },
       { name: 'Queue đệm ghi', how: 'Đệm ghi trong lúc xử lý đĩa.', tradeoff: 'Backlog vẫn đầy nếu không giải quyết được gốc rễ.' }
     ]
@@ -147,12 +150,14 @@ export const CODEX_INCIDENTS = [
     pros: [], cons: [],
     real: 'Knight Capital (1/8/2012) mất khoảng 440 triệu USD trong ~45 phút sau khi deploy không đồng bộ: một server vẫn chạy code cũ kích hoạt logic giao dịch lỗi.',
     tryIt: 'Có 3 App sau LB; deploy chỉ một node, xem error rate, rồi rollback nếu lỗi.',
-    see: ['concept-blast-radius', 'concept-observability', 'comp-app', 'concept-postmortem'],
+    see: ['concept-blast-radius', 'concept-observability', 'comp-app', 'concept-postmortem', 'comp-docker', 'comp-k8s', 'concept-containers'],
     symptoms: ['Error rate tăng ngay sau lần deploy', 'Chỉ một phần request lỗi (~40% của node đó)', 'Node ngoài vùng sáng: không có tín hiệu nào', 'p99 và lỗi cải thiện ngay sau rollback'],
     mitigations: [
       { name: 'Deploy từng node (canary)', how: 'Deploy trên một node trước, quan sát rồi mới tiếp tục.', tradeoff: 'Phát hành chậm hơn; cần ≥ 2 node và đo đạc tốt.' },
       { name: 'Giám sát', how: 'Giữ App trong vùng sáng để thấy error rate sau deploy.', tradeoff: 'Tốn điện và công theo dõi.' },
       { name: 'Rollback', how: 'Quay về bản trước ngay khi thấy lỗi.', tradeoff: 'Có thể mất tính năng/sửa lỗi; cần artifact bản cũ.' },
+      { name: 'Container hoá (Module Docker)', how: 'Image bất biến loại bỏ lệch môi trường "works on my machine": xác suất bản lỗi giảm từ 30% xuống 12% (Backend Dev 12% → 5%).', tradeoff: '-4% công suất, độ phức tạp +1; vẫn không bắt được lỗi logic.' },
+      { name: 'Kubernetes rolling update', how: 'Với App container hoá, deploy chỉ ~1 s downtime và readiness probe thất bại sẽ tự rollback bản lỗi sau ~10 s.', tradeoff: 'Độ phức tạp +6, 4 W điện; control plane là SPOF.' },
       { name: 'Restart', how: 'Khởi động lại để loại trừ lỗi trạng thái.', tradeoff: 'Không sửa lỗi nếu nguyên nhân là code.' }
     ]
   },
@@ -218,7 +223,7 @@ export const CODEX_INCIDENTS = [
     cons: ['Tốn chi phí và điện cho tài nguyên nhàn rỗi', 'Thêm độ phức tạp (đồng bộ, failover)', 'LB/failover mới có thể thành SPOF mới'],
     real: 'Sự cố S3 us-east-1 năm 2017 cho thấy một dịch vụ nền tảng thành SPOF cho rất nhiều phụ thuộc; ngành hàng không dùng dư thừa nhiều lớp (N+1) cho hệ thống quan trọng.',
     tryIt: 'Vẽ monolith, chạy crash trên từng node; liệt kê thành phần nào làm cả hệ thống tắt.',
-    see: ['inc-crash', 'inc-outage', 'comp-lb', 'comp-generator', 'concept-capacity-cost'],
+    see: ['inc-crash', 'inc-outage', 'comp-lb', 'comp-generator', 'concept-capacity-cost', 'comp-s3', 'comp-k8s', 'concept-orchestration'],
     symptoms: [], mitigations: []
   },
   {
@@ -333,19 +338,19 @@ export const CODEX_INCIDENTS = [
     id: 'concept-durability', cat: 'concept',
     title: 'Durability: RPO, RTO & backup vs replica',
     summary: 'Replication không phải backup: bản sao cũng sao chép luôn lỗi và thao tác xoá nhầm.',
-    body: `<p><b>RPO</b> (Recovery Point Objective) là lượng dữ liệu tối đa chấp nhận mất, tính theo thời gian; <b>RTO</b> (Recovery Time Objective) là thời gian tối đa để khôi phục. Replica trả lời "node chết thì sao" (RTO thấp), còn backup trả lời "dữ liệu bị xoá/hỏng thì sao" (point-in-time). <code>DROP TABLE</code> nhầm hay bug ghi sai được replicate sang mọi bản sao ngay lập tức, nên replica không thay thế backup đã kiểm thử khôi phục.</p><p>Trong game: ghi <b>async</b> chưa sao chép sẽ bị <b>mất</b> khi leader chết (RPO &gt; 0); <b>sync</b> cho RPO ≈ 0 nhưng ghi thất bại nếu replica không với tới (CP). <b>Archive</b>/retention ảnh hưởng dung lượng và lịch sử. Hãy cân đối RPO/RTO với chi phí.</p>`,
+    body: `<p><b>RPO</b> (Recovery Point Objective) là lượng dữ liệu tối đa chấp nhận mất, tính theo thời gian; <b>RTO</b> (Recovery Time Objective) là thời gian tối đa để khôi phục. Replica trả lời "node chết thì sao" (RTO thấp), còn backup trả lời "dữ liệu bị xoá/hỏng thì sao" (point-in-time). <code>DROP TABLE</code> nhầm hay bug ghi sai được replicate sang mọi bản sao ngay lập tức, nên replica không thay thế backup đã kiểm thử khôi phục.</p><p>Trong game: ghi <b>async</b> chưa sao chép sẽ bị <b>mất</b> khi leader chết (RPO &gt; 0); <b>sync</b> cho RPO ≈ 0 nhưng ghi thất bại nếu replica không với tới (CP). <b>Archive</b>/retention ảnh hưởng dung lượng và lịch sử. Hãy cân đối RPO/RTO với chi phí.</p><p>Nối DB tới <b>Object Storage (S3)</b> để có backup thật: snapshot mỗi 30 s, nên RPO khi mất đĩa là khoảng thời gian kể từ snapshot cuối (inspector hiện số giây này); không có backup, mất đĩa DB là mất mọi thứ ghi từ đầu. Replica không cứu được tình huống đó nếu lỗi đã được sao chép.</p>`,
     pros: ['RPO/RTO cho mục tiêu khôi phục rõ ràng', 'Backup bảo vệ trước lỗi logic và xoá nhầm', 'Sync replication tránh mất ghi'],
     cons: ['Sync làm tăng độ trễ và giảm khả dụng', 'Backup chưa kiểm thử khôi phục là vô giá trị', 'Chi phí lưu trữ và vận hành'],
     real: 'Sự cố GitLab.com ngày 31/1/2017 xoá nhầm dữ liệu primary và nhiều cơ chế backup không dùng được, được ghi lại công khai trong postmortem.',
     tryIt: 'Chạy crash trên DB với async và sync; so sánh lượng ghi bị mất và lỗi ghi.',
-    see: ['concept-backup', 'concept-replication', 'concept-cap', 'comp-replica', 'inc-diskfull', 'inc-dataloss'],
+    see: ['concept-backup', 'concept-replication', 'concept-cap', 'comp-replica', 'inc-diskfull', 'inc-dataloss', 'comp-s3'],
     symptoms: [], mitigations: []
   },
   {
     id: 'concept-backup', cat: 'concept',
     title: 'Backup, RPO & RTO (replica không phải backup)',
     summary: 'Backup là điểm quay về trong quá khứ; replica chỉ là bản sao của hiện tại nên sao chép cả lỗi.',
-    body: `<p>Backup là bản sao dữ liệu <i>tại một thời điểm</i>, được giữ riêng khỏi dữ liệu sống. <b>RPO</b> thực tế chính là tuổi của snapshot cuối (backup hằng giờ thì mất tới ~1 giờ ghi); <b>RTO</b> là thời gian dựng lại dữ liệu từ đó (nạp, replay log, kiểm tra). Replica thì ngược lại: nó luôn cố giống primary <i>ngay bây giờ</i>, nên thảm hoạ logic (xoá nhầm, migration lỗi, bug ghi sai, ransomware) được sao chép sang nó tức thì. Replica chống mất node, backup chống mất dữ liệu: hai việc khác nhau.</p><p>Trong game: cấu hình DB có Backup <b>Tắt</b>, <b>Hằng giờ</b> (snapshot mỗi 30 s) và <b>Hằng ngày</b> (mỗi 150 s, một ngày game). Mỗi snapshot chạy vài giây (tốn IO, DB chậm đi) rồi chiếm một phần đĩa; Retention giảm phần đĩa này. Thẻ DB hiện "Backup gần nhất" và số bản ghi chưa được bảo vệ. Khi <code>dataloss</code> xảy ra, nút <b>Khôi phục từ backup</b> đưa DB về snapshot cuối (reboot ~12 s). Tắt Backup xoá mọi snapshot.</p><p>Hai quy tắc thực tế: backup chưa từng thử khôi phục thì chưa phải là backup, và nó phải nằm tách khỏi hệ thống nó bảo vệ (quy tắc 3-2-1: 3 bản, 2 loại lưu trữ, 1 bản ngoài site).</p>`,
+    body: `<p>Backup là bản sao dữ liệu <i>tại một thời điểm</i>, được giữ riêng khỏi dữ liệu sống. <b>RPO</b> thực tế chính là tuổi của snapshot cuối (backup hằng giờ thì mất tới ~1 giờ ghi); <b>RTO</b> là thời gian dựng lại dữ liệu từ đó (nạp, replay log, kiểm tra). Replica thì ngược lại: nó luôn cố giống primary <i>ngay bây giờ</i>, nên thảm hoạ logic (xoá nhầm, migration lỗi, bug ghi sai, ransomware) được sao chép sang nó tức thì. Replica chống mất node, backup chống mất dữ liệu: hai việc khác nhau.</p><p>Trong game: cấu hình DB có Backup <b>Tắt</b>, <b>Hằng giờ</b> (snapshot mỗi 30 s) và <b>Hằng ngày</b> (mỗi 150 s, một ngày game). Mỗi snapshot chạy vài giây (tốn IO, DB chậm đi) rồi chiếm một phần đĩa; Retention giảm phần đĩa này. Thẻ DB hiện "Backup gần nhất" và số bản ghi chưa được bảo vệ. Khi <code>dataloss</code> xảy ra, nút <b>Khôi phục từ backup</b> đưa DB về snapshot cuối (reboot ~12 s). Tắt Backup xoá mọi snapshot nằm trên node DB.</p><p>Nối DB tới <b>Object Storage (S3)</b> là một nguồn backup thứ hai: snapshot mỗi 30 s đẩy ra ngoài node nên không mất khi tắt Backup hay khi đĩa DB hỏng, và cũng dùng được để khôi phục. Hai nguồn cùng tồn tại thì điểm khôi phục là snapshot mới nhất.</p><p>Hai quy tắc thực tế: backup chưa từng thử khôi phục thì chưa phải là backup, và nó phải nằm tách khỏi hệ thống nó bảo vệ (quy tắc 3-2-1: 3 bản, 2 loại lưu trữ, 1 bản ngoài site).</p>`,
     pros: ['Quay về được điểm trước khi dữ liệu bị xoá hay hỏng', 'Chống lỗi con người, bug ghi sai và ransomware mà replica không chống được', 'RPO/RTO đo được và chọn được theo chi phí'],
     cons: ['Tốn đĩa và IO mỗi lần snapshot', 'Mất các ghi sau snapshot cuối (RPO > 0)', 'Khôi phục có downtime (RTO) và chưa thử thì có thể vô dụng'],
     real: 'Năm 2014 Code Spaces bị kẻ tấn công vào bảng điều khiển AWS xoá dữ liệu cùng các bản backup nằm trong cùng tài khoản; công ty đóng cửa gần như ngay sau đó.',
@@ -381,12 +386,12 @@ export const CODEX_INCIDENTS = [
     id: 'concept-autoscaling', cat: 'concept',
     title: 'Autoscaling: reactive vs predictive',
     summary: 'Tự động thêm/bớt năng lực theo tải; có độ trễ khởi động và chi phí cần cân nhắc.',
-    body: `<p>Autoscaling <b>reactive</b> phản ứng với metric (CPU, queue depth) khi vượt ngưỡng — đơn giản nhưng luôn chậm hơn tải vì có độ trễ đo, quyết định và khởi động (warm-up lag). <b>Predictive</b>/scheduled scale trước theo mẫu thời gian đã biết (giờ cao điểm). <b>Cooldown</b> ngăn thêm/bớt liên tục (thrashing). Ngưỡng thấp scale sớm nhưng tốn tiền; ngưỡng cao tiết kiệm nhưng rủi ro. Cũng cần giới hạn tối đa để tránh hoá đơn bùng nổ và đừng quên nút thắt phía sau (DB).</p><p>Trong game: <b>Autoscaler</b> (module trên LB) thêm instance ảo khi util &gt; 70%, mất 15 s khởi động và tốn điện. Một spike kéo dài ~40 s nên nó không kịp đỡ đỉnh đầu; hãy kết hợp với rate limit, và nhớ tải tăng theo giờ cao điểm (×1.25).</p>`,
+    body: `<p>Autoscaling <b>reactive</b> phản ứng với metric (CPU, queue depth) khi vượt ngưỡng — đơn giản nhưng luôn chậm hơn tải vì có độ trễ đo, quyết định và khởi động (warm-up lag). <b>Predictive</b>/scheduled scale trước theo mẫu thời gian đã biết (giờ cao điểm). <b>Cooldown</b> ngăn thêm/bớt liên tục (thrashing). Ngưỡng thấp scale sớm nhưng tốn tiền; ngưỡng cao tiết kiệm nhưng rủi ro. Cũng cần giới hạn tối đa để tránh hoá đơn bùng nổ và đừng quên nút thắt phía sau (DB).</p><p>Trong game: <b>Autoscaler</b> (module trên LB) thêm instance ảo khi util &gt; 70%, mất 15 s khởi động và tốn điện. Một spike kéo dài ~40 s nên nó không kịp đỡ đỉnh đầu; hãy kết hợp với rate limit, và nhớ tải tăng theo giờ cao điểm (×1.25).</p><p><b>HPA</b> của Kubernetes cùng ngưỡng 70% nhưng container khởi động nhanh hơn: 8 s so với 15 s; bớt instance khi util &lt; 30% trong 30 s, tối đa +6. Chỉ áp dụng cho App đã cài Module Docker, và đổi lại bạn trả độ phức tạp và điện của cả cluster.</p>`,
     pros: ['Tiết kiệm khi tải thấp, đủ năng lực khi tải cao', 'Giảm can thiệp thủ công', 'Predictive tránh được độ trễ khởi động'],
     cons: ['Reactive luôn chậm hơn đỉnh tải', 'Chi phí có thể tăng khó lường', 'Không giúp nếu nút thắt là DB hoặc dependency khác'],
     real: 'AWS Auto Scaling hỗ trợ target tracking, scheduled và predictive scaling với cooldown/warm-up cấu hình được; Kubernetes HPA có cơ chế tương tự.',
     tryIt: 'Bật autoscaler và quan sát đợt tăng instance sau 15 s khi spike; thử thêm rate limit.',
-    see: ['inc-spike', 'comp-lb', 'concept-scaling', 'concept-capacity-cost', 'concept-cold-start'],
+    see: ['inc-spike', 'comp-lb', 'concept-scaling', 'concept-capacity-cost', 'concept-cold-start', 'comp-k8s', 'concept-orchestration'],
     symptoms: [], mitigations: []
   },
   {

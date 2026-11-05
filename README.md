@@ -35,13 +35,15 @@ npm start            # http://localhost:3000   (đổi cổng: node server/index
 | Ban đêm Gremlin chỉ gặm thứ ngoài vùng sáng | Observability: không giám sát = hỏng trong im lặng |
 | Nhiên liệu máy phát tăng theo số component | Chi phí vận hành / cloud bill, failure domain (nguồn điện dự phòng) |
 | Tỉnh táo giảm khi hệ thống phức tạp, phục hồi nhờ Runbook | Chi phí của độ phức tạp, alert fatigue |
-| Monolith → LB + nhiều App → Cache → Queue → Replica → CDN | Scale ngang vs dọc, SPOF, backpressure, đọc/ghi |
+| Monolith → LB + nhiều App → Cache → Queue → Replica → CDN → Object Storage | Scale ngang vs dọc, SPOF, backpressure, đọc/ghi, tách tải tĩnh khỏi compute |
 | Round-robin / least-conn / hash; retry, backoff, circuit breaker | Cân bằng tải, retry storm, fail fast |
 | Cache TTL, jitter, coalescing | Stampede, cold start, staleness vs hit ratio |
 | DB sync/async, failover tự động/quorum, partition | CAP, split-brain, RPO |
 | Backup định kỳ + khôi phục khi dữ liệu bị xoá nhầm (DB → Cấu hình → Backup) | RPO/RTO, replica không phải backup, chi phí đĩa/IO của snapshot |
 | Mức cảnh báo ở Đèn giám sát (Tắt / Nhạy / Vừa / Chặt), người on-call đổi mỗi ngày, ack trong 20 s | Alerting, MTTD/MTTA, báo động giả và alert fatigue, escalation; post-mortem chấm điểm khả năng phát hiện |
 | 12 loại sự cố + post-mortem dựa trên kiến trúc thật | Pattern thất bại và cách giảm blast radius |
+| Module Docker + Kubernetes (tự chữa, HPA, rolling update, tự rollback) | Container/image bất biến, orchestration, desired state, và cái giá của độ phức tạp (k8s là quá tay cho monolith) |
+| DB → S3 backup | Replica ≠ backup; RPO, durability, offload dữ liệu lạnh |
 | Chaos Lab | Chaos engineering / game day |
 
 ## Cấu trúc mã
@@ -55,7 +57,7 @@ shared/            lõi mô phỏng thuần (chạy y hệt trong Node và Web W
   alerts.js        alert theo ngưỡng trên Đèn giám sát, on-call, ack/escalate
   mobs.js tips.js  AI quái, cố vấn theo ngữ cảnh
   room.js          phòng: nhận input, mô phỏng 20 Hz, broadcast delta snapshot
-  codex_*.js       nội dung Field Guide (51 mục)
+  codex_*.js       nội dung Field Guide (56 mục)
 server/index.js    HTTP tĩnh + WebSocket + lưu thế giới
 public/            client canvas 2D + HUD (render.js, art.js procedural, hud/inspector/dashboard/codexui)
 tools/             sim-test.js, incident-test.js, db-test.js, alert-sim.js (headless), art-preview.html

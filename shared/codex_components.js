@@ -30,13 +30,14 @@ export const CODEX_COMPONENTS = [
 <li>Trong game, lớp <b>tĩnh</b> chiếm 30% traffic hợp lệ; Gateway đẩy lớp này qua CDN nếu có.</li>
 <li>Hit ~92% <b>sau khi ấm</b> (warm-up): CDN mới đặt sẽ có nhiều miss lúc đầu.</li>
 <li>Miss chuyển về origin (cáp đầu tiên), nên origin vẫn phải gánh ~8% lớp tĩnh.</li>
+<li>Origin của CDN có thể là <b>Object Storage (S3)</b>: miss lớp tĩnh lấy từ S3 (45 ms, 0,1 công) thay vì làm App tốn 1 công.</li>
 </ul>
 <p>Cái giá: nội dung có thể cũ (cần purge/versioned URL), và CDN không giúp gì cho request đọc động hay ghi, nên không thay được scale-out cho App/DB.</p>`,
     pros: ['Giảm mạnh tải tĩnh trên origin', 'Giảm độ trễ cho user ở xa', 'Hấp thụ spike lớp tĩnh'],
-    cons: ['Không giúp request động/ghi', 'Invalidate/purge khó, dữ liệu có thể cũ', 'Phải trả phí và điện'],
+    cons: ['Không giúp request động/ghi', 'Invalidate/purge khó, dữ liệu có thể cũ', 'Phải trả phí và điện', 'Origin S3 chết thì phải fallback sang origin khác'],
     real: 'Cloudflare, Akamai và Amazon CloudFront cache nội dung tĩnh tại hàng trăm điểm hiện diện (PoP) toàn cầu.',
     tryIt: 'Đặt CDN lúc đang có spike và xem tải Gateway→App của lớp tĩnh giảm dần khi CDN ấm lên.',
-    see: ['comp-cache', 'comp-gateway', 'inc-spike', 'concept-cache-ttl']
+    see: ['comp-cache', 'comp-gateway', 'inc-spike', 'concept-cache-ttl', 'comp-s3']
   },
   {
     id: 'comp-lb',
@@ -49,12 +50,13 @@ export const CODEX_COMPONENTS = [
 <li><b>Least-connections</b>: chia theo công suất còn trống, tự bù khi node không đồng đều hoặc chậm.</li>
 <li><b>Hash/sticky</b>: cùng key vào cùng node (tốt cho cache cục bộ, session), nhưng có <b>skew</b>: một node nhận nhiều hơn hẳn, nhất là khi hot key.</li>
 </ul>
-<p>LB phát hiện node chết bằng health check sau ~4 s; trong khoảng đó nó vẫn gửi request vào node chết nên vẫn có lỗi. Module <b>Autoscaler</b> thêm instance ảo khi util &gt; 70% (khởi động 15 s, tốn điện). Không có LB, nhiều App chỉ có App đầu tiên nhận tải.</p>`,
+<p>LB phát hiện node chết bằng health check sau ~4 s; trong khoảng đó nó vẫn gửi request vào node chết nên vẫn có lỗi. Module <b>Autoscaler</b> thêm instance ảo khi util &gt; 70% (khởi động 15 s, tốn điện). Không có LB, nhiều App chỉ có App đầu tiên nhận tải.</p>
+<p>So với <b>Kubernetes Cluster</b>: LB chỉ chia tải và (với Autoscaler) thêm instance; K8s còn tự restart App crash, scale bằng HPA (8 s), rolling update và auto-rollback, nhưng nặng hơn (0,4 công/request so với 0,3), tốn 4 W, độ phức tạp +6 và control plane là SPOF. Với monolith nhỏ, LB là đủ.</p>`,
     pros: ['Scale ngang và N+1 redundancy', 'Che node chết khỏi user (sau health check)', 'Autoscaler hấp thụ spike'],
     cons: ['Bản thân LB có thể là SPOF', 'Cửa sổ ~4 s vẫn gửi vào node chết', 'Hash gây skew, round-robin bỏ qua sức mạnh khác nhau'],
     real: 'NGINX, HAProxy, Envoy và AWS ELB/ALB là các load balancer phổ biến; HAProxy hỗ trợ cả roundrobin, leastconn và hash.',
     tryIt: 'Đặt 3 App khác tier sau LB: chạy Round-robin rồi đổi Least-connections và so sánh util từng node.',
-    see: ['concept-lb-algos', 'concept-health-checks', 'concept-autoscaling', 'inc-hotkey']
+    see: ['concept-lb-algos', 'concept-health-checks', 'concept-autoscaling', 'inc-hotkey', 'comp-k8s']
   },
   {
     id: 'comp-app',
@@ -67,13 +69,14 @@ export const CODEX_COMPONENTS = [
 <li><b>Retries 0–3</b> + <b>backoff+jitter</b>: retry cứu lỗi thoáng qua nhưng nhân tải lên downstream đang yếu; backoff có jitter làm các lần thử rải đều.</li>
 <li><b>Circuit breaker</b>: mở khi &gt;50% lỗi từ downstream, fail fast và thăm dò 5% để biết khi nào hồi phục.</li>
 <li><b>Deploy</b>: 30% rủi ro bản lỗi (~40% request của node đó lỗi, <i>không thấy nếu không giám sát</i>). Có <b>Rollback</b> và <b>Restart</b>.</li>
+<li><b>Module Docker</b>: container hoá App — restart nhanh gấp đôi, deploy lỗi giảm xuống 12% (Backend Dev 5%), đổi lấy -4% công suất và độ phức tạp +1. Là điều kiện để <b>Kubernetes</b> tự chữa, HPA và rolling update cho App; không container thì K8s chỉ cân bằng tải.</li>
 </ul>
 <p>Deploy từng node (canary) giới hạn blast radius; deploy hết cùng lúc là đánh cược.</p>`,
-    pros: ['Stateless nên scale ngang dễ', 'Breaker/backoff giữ hệ thống khỏi sụp dây chuyền', 'Deploy canary + rollback giảm rủi ro'],
-    cons: ['Scale up cần reboot', 'Retry sai cách gây retry storm', 'Deploy lỗi âm thầm nếu thiếu giám sát'],
+    pros: ['Stateless nên scale ngang dễ', 'Breaker/backoff giữ hệ thống khỏi sụp dây chuyền', 'Deploy canary + rollback giảm rủi ro', 'Module Docker giảm deploy lỗi và restart nhanh'],
+    cons: ['Scale up cần reboot', 'Retry sai cách gây retry storm', 'Deploy lỗi âm thầm nếu thiếu giám sát', 'Docker: -4% công suất, độ phức tạp +1'],
     real: 'Netflix phổ biến mô hình circuit breaker qua Hystrix; AWS Builders Library khuyến nghị exponential backoff kèm jitter.',
     tryIt: 'Đặt Retries=3 không backoff rồi gây spike; sau đó bật backoff+jitter và breaker, so sánh p99.',
-    see: ['concept-retry-storm', 'concept-circuit-breaker', 'inc-baddeploy', 'inc-leak', 'concept-scaling']
+    see: ['concept-retry-storm', 'concept-circuit-breaker', 'inc-baddeploy', 'inc-leak', 'concept-scaling', 'comp-docker', 'comp-k8s']
   },
   {
     id: 'comp-cache',
@@ -123,13 +126,14 @@ export const CODEX_COMPONENTS = [
 <li><b>Replication sync/async</b>: sync không mất dữ liệu nhưng ghi thất bại nếu replica không với tới (CP); async nhanh nhưng mất ghi chưa sao chép khi leader chết.</li>
 <li><b>Failover</b>: tắt / tự động / quorum. Tự động + async + partition có thể gây split-brain; quorum cần ≥3 node.</li>
 <li><b>Retention</b> làm đĩa đầy chậm hơn; <b>Archive</b> dọn đĩa. Đĩa đầy → ghi thất bại.</li>
+<li><b>Backup/archive tới S3</b>: nối DB tới Object Storage để snapshot mỗi 30 s (xem số giây từ lần backup cuối trong inspector) và offload dữ liệu lạnh, đĩa đầy chậm hơn 25%. Không có backup, mất đĩa là mất mọi ghi từ đầu.</li>
 </ul>
 <p>Ghi chỉ vào <b>leader</b>; đọc có thể chia cho Replica.</p>`,
-    pros: ['Nguồn sự thật và độ bền dữ liệu', 'Shard + replica mở rộng đọc/ghi', 'Failover tăng availability'],
-    cons: ['Scale ghi khó, shard có skew', 'Đĩa đầy làm ghi thất bại', 'Failover sai gây mất dữ liệu/split-brain'],
+    pros: ['Nguồn sự thật và độ bền dữ liệu', 'Shard + replica mở rộng đọc/ghi', 'Failover tăng availability', 'Nối S3 để có backup và đĩa đầy chậm hơn'],
+    cons: ['Scale ghi khó, shard có skew', 'Đĩa đầy làm ghi thất bại', 'Failover sai gây mất dữ liệu/split-brain', 'Không có backup thì mất đĩa là mất sạch dữ liệu'],
     real: 'PostgreSQL dùng streaming replication (sync hoặc async); Vitess shard MySQL ở quy mô lớn (xuất phát từ YouTube).',
     tryIt: 'Chuyển Replication sang async rồi giết leader: xem ghi bị mất; so với sync khi cắt cáp tới replica.',
-    see: ['comp-replica', 'concept-replication', 'concept-sharding', 'inc-diskfull', 'inc-partition', 'concept-split-brain']
+    see: ['comp-replica', 'comp-s3', 'concept-replication', 'concept-sharding', 'inc-diskfull', 'inc-partition', 'concept-split-brain']
   },
   {
     id: 'comp-replica',
@@ -148,6 +152,62 @@ export const CODEX_COMPONENTS = [
     real: 'Amazon RDS và PostgreSQL hỗ trợ read replica; MySQL replica cũng được dùng rộng rãi cho báo cáo và đọc.',
     tryIt: 'Gây sự cố analytics khi có và không có Replica; so sánh p99 của luồng ghi chính.',
     see: ['comp-db', 'concept-replication', 'inc-analytics', 'concept-cap']
+  },
+  {
+    id: 'comp-s3',
+    cat: 'component',
+    title: 'Object Storage (S3)',
+    summary: 'Kho object rẻ và bền: origin cho nội dung tĩnh và đích backup/archive cho DB.',
+    body: `<p>Object Storage lưu file/blob theo key, rất rẻ trên mỗi request và co giãn gần như vô hạn, nhưng chậm hơn compute hay edge cache. Trong game nó có hai vai trò:</p>
+<ul>
+<li><b>Origin tĩnh</b>: Gateway hoặc CDN nối tới S3 sẽ lấy lớp tĩnh (30% traffic) từ đây. Mỗi request tốn 0,1 công (App tốn 1), độ trễ cơ bản 45 ms (chậm hơn một CDN edge hit ~8 ms nhưng rẻ hơn compute nhiều), công suất 6000.</li>
+<li><b>Đích backup + offload dữ liệu lạnh</b>: DB nối tới S3 chụp snapshot mỗi 30 s (đặt lại "dữ liệu ghi từ lần backup cuối") và đĩa đầy chậm hơn 25%. Không có backup nào, mất đĩa DB là mất mọi thứ ghi từ lúc bắt đầu.</li>
+<li>Nếu S3 chết, health check của bên gọi (~3 s) chuyển sang origin kế tiếp theo thứ tự cáp (ví dụ App).</li>
+</ul>
+<p>S3 là một thành phần logic duy nhất, nên cũng là SPOF cho phần tĩnh: nhiều thứ cùng phụ thuộc vào nó.</p>`,
+    pros: ['Rẻ trên mỗi request (0,1 công), công suất lớn', 'Cho DB backup/snapshot và offload dữ liệu lạnh', 'Gỡ tải tĩnh khỏi App'],
+    cons: ['Chậm hơn CDN edge (~45 ms so với ~8 ms)', 'Là SPOF cho nội dung tĩnh nếu không có origin dự phòng', 'Không phục vụ request động/ghi'],
+    real: 'Sự cố AWS S3 us-east-1 ngày 28/2/2017 xảy ra do một lệnh gõ sai trong lúc gỡ lỗi, làm nhiều dịch vụ phụ thuộc ngừng hoạt động.',
+    tryIt: 'Nối Gateway tới S3 rồi tới App; chạy crash trên S3 và xem lớp tĩnh chuyển về App sau ~3 s. Nối DB tới S3 và quan sát số giây từ lần backup cuối.',
+    see: ['comp-cdn', 'comp-gateway', 'comp-db', 'concept-durability', 'concept-spof', 'inc-diskfull', 'inc-crash']
+  },
+  {
+    id: 'comp-k8s',
+    cat: 'component',
+    title: 'Kubernetes Cluster',
+    summary: 'Ingress + scheduler: định tuyến theo công suất trống, tự chữa và tự scale các App đã container hoá.',
+    body: `<p>Kubernetes Cluster đứng giữa Gateway/CDN và các App. Nó chọn App theo công suất còn trống (kiểu least-connections), phát hiện pod chết sau ~1 s nhờ readiness probe (LB thường mất ~4 s).</p>
+<ul>
+<li><b>Self-healing</b>: App đã container hoá (Module Docker) bị crash/OOM sẽ được restart tự động ~6 s sau, không cần kỹ sư.</li>
+<li><b>HPA</b>: thêm instance khi util nhóm &gt; 70% (khởi động 8 s so với 15 s của Autoscaler trên LB), bớt khi &lt; 30% trong 30 s, tối đa +6.</li>
+<li><b>Rolling update</b>: deploy chỉ ~1 s downtime (so với 5 s) và readiness probe thất bại sẽ tự rollback bản lỗi sau ~10 s.</li>
+<li>App <i>chưa</i> container hoá nối vào chỉ được cân bằng tải: không healing, HPA hay rollback.</li>
+</ul>
+<p>Cái giá: 4 W điện, độ phức tạp +6 (tải nhận thức), 0,4 công mỗi request (nặng hơn LB 0,3), công suất 2500. Control plane là SPOF và không tự chữa. Với một monolith nhỏ, đây là overkill.</p>`,
+    pros: ['Tự chữa và tự scale cho App container hoá', 'Rolling update ít downtime, tự rollback bản lỗi', 'Phát hiện pod chết nhanh (~1 s)'],
+    cons: ['Độ phức tạp +6 và tốn 4 W điện', 'Control plane là SPOF, không tự chữa', 'Nặng hơn LB (0,4 vs 0,3 công/request); overkill cho monolith'],
+    real: 'Kubernetes được Google mở mã nguồn năm 2014 và kế thừa từ hệ thống nội bộ Borg.',
+    tryIt: 'Cài Module Docker lên App, nối Gateway → Kubernetes → App rồi chạy crash và leak; so sánh với LB + Restart thủ công, và để ý Tỉnh táo giảm.',
+    see: ['comp-docker', 'comp-app', 'comp-lb', 'concept-orchestration', 'concept-health-checks', 'concept-autoscaling', 'concept-complexity', 'concept-spof', 'inc-crash', 'inc-leak', 'inc-baddeploy']
+  },
+  {
+    id: 'comp-docker',
+    cat: 'component',
+    title: 'Docker (Module container)',
+    summary: 'Module cài lên App: đóng gói image bất biến, restart nhanh, ít deploy lỗi; điều kiện để Kubernetes quản lý.',
+    body: `<p>Module Docker được cài ở inspector của một App, biến nó thành <b>container hoá</b>. Hiệu ứng trong game:</p>
+<ul>
+<li>Thời gian reboot/restart giảm một nửa (container khởi động nhanh).</li>
+<li>Xác suất deploy lỗi giảm từ 30% xuống 12% (Backend Dev: 12% → 5%) vì image bất biến loại bỏ lệch môi trường "works on my machine".</li>
+<li>Công suất -4% do overhead runtime, độ phức tạp +1.</li>
+<li>Là điều kiện tiên quyết để Kubernetes self-heal, scale bằng HPA và rolling update cho App.</li>
+</ul>
+<p>Docker một mình không tự chữa hay tự scale: nó chỉ làm đơn vị triển khai tốt hơn. Phần tự động hoá cần orchestrator.</p>`,
+    pros: ['Restart nhanh gấp đôi', 'Giảm mạnh xác suất deploy lỗi', 'Mở đường cho Kubernetes'],
+    cons: ['Công suất -4% do overhead runtime', 'Độ phức tạp +1', 'Không tự chữa nếu không có orchestrator'],
+    real: 'Docker được mở mã nguồn năm 2013 và phổ biến hoá việc đóng gói ứng dụng bằng container image.',
+    tryIt: 'Cài Module Docker lên một App rồi so thời gian restart và tần suất bản deploy lỗi trước/sau.',
+    see: ['concept-containers', 'comp-k8s', 'comp-app', 'inc-baddeploy', 'concept-orchestration']
   },
   {
     id: 'comp-generator',
@@ -422,5 +482,41 @@ export const CODEX_COMPONENTS = [
     real: 'Nhiều đội công bố việc quay lại monolith (modular) khi microservices quá đắt; Kubernetes là ví dụ nền tảng mạnh nhưng đòi hỏi vận hành đáng kể.',
     tryIt: 'Thêm Cache, Queue và Replica cùng lúc rồi để ý thanh Tỉnh táo; sau đó dùng Runbook để hồi.',
     see: ['comp-lantern', 'concept-observability', 'concept-postmortem', 'concept-chaos']
+  },
+  {
+    id: 'concept-orchestration',
+    cat: 'concept',
+    title: 'Orchestration: desired state & self-healing',
+    summary: 'Bạn khai báo trạng thái mong muốn, control plane liên tục đối chiếu và sửa cho thực tế khớp; đổi lại là một hệ thống phức tạp để vận hành.',
+    body: `<p>Orchestrator (điển hình là Kubernetes) vận hành theo <b>reconciliation loop</b>: so sánh <i>desired state</i> ("chạy 3 bản sao image v2") với <i>actual state</i>, rồi hành động để thu hẹp khoảng cách — khởi động lại pod chết, thêm bản sao, thay phiên bản. Vòng lặp này là nền tảng của <b>self-healing</b>: người vận hành không cần can thiệp từng sự cố.</p>
+<ul>
+<li><b>Liveness</b> probe quyết định có restart container không; <b>readiness</b> probe quyết định có đưa traffic vào không. Bản mới không qua readiness thì rolling update dừng và có thể tự rollback.</li>
+<li><b>HPA</b> (Horizontal Pod Autoscaler) thêm/bớt bản sao theo metric; <b>rolling update</b> thay từng bản sao nên gần như không downtime.</li>
+<li><b>Control plane</b> (API server, scheduler, etcd) là một SPOF mới: nó không tự chữa mình. Workload đang chạy vẫn sống, nhưng không còn self-healing hay scale cho tới khi control plane quay lại.</li>
+</ul>
+<p>Trong game: Kubernetes Cluster nối tới các App đã cài Module Docker sẽ restart App crash sau ~6 s, scale bằng HPA (8 s khởi động, tối đa +6 instance) và rolling update chỉ ~1 s downtime, auto-rollback bản lỗi sau ~10 s. Cái giá là 4 W điện, độ phức tạp +6 và sức làm việc 0.4 mỗi request. Với một monolith nhỏ, đó là overkill: LB + Autoscaler + runbook thường đủ và rẻ hơn.</p>`,
+    pros: ['Tự chữa lỗi, giảm phụ thuộc vào người trực', 'Autoscaling và rolling update có sẵn', 'Mô hình khai báo, lặp lại được'],
+    cons: ['Control plane là SPOF mới và không tự chữa', 'Tăng mạnh độ phức tạp và chi phí vận hành', 'Overkill cho hệ thống nhỏ/monolith'],
+    real: 'Kubernetes được Google mở mã nguồn năm 2014 và kế thừa từ hệ thống nội bộ Borg; vòng lặp reconciliation (controller) là mô hình cốt lõi của nó.',
+    tryIt: 'Nối Kubernetes tới một App đã cài Module Docker, chạy crash và so thời gian hồi phục với một App chỉ có Restart thủ công; để ý thanh Tỉnh táo.',
+    see: ['comp-k8s', 'comp-docker', 'concept-health-checks', 'concept-autoscaling', 'concept-spof', 'concept-complexity', 'concept-containers']
+  },
+  {
+    id: 'concept-containers',
+    cat: 'concept',
+    title: 'Container: image bất biến & cô lập nhẹ',
+    summary: 'Đóng gói app cùng phụ thuộc thành image bất biến chạy nhanh, nhất quán giữa mọi môi trường; nhẹ hơn VM nhưng không phải VM.',
+    body: `<p>Một <b>container image</b> gói code, runtime và thư viện thành một khối <i>immutable</i>: cùng image chạy giống hệt ở máy dev, staging và production. Điều này loại bỏ lớp lỗi "<i>works on my machine</i>" do lệch môi trường (drift), và khiến rollback đơn giản là chạy lại image cũ.</p>
+<ul>
+<li><b>Khởi động nhanh</b>: container là một process được cô lập, không boot cả hệ điều hành nên start trong giây thay vì phút.</li>
+<li><b>Cô lập bằng Linux namespaces + cgroups</b>: namespaces giới hạn những gì process nhìn thấy, cgroups giới hạn CPU/RAM nó dùng. Các container <b>chia sẻ kernel</b> của host, nên cô lập yếu hơn VM (có hypervisor riêng kernel).</li>
+<li><b>Overhead nhỏ</b> nhưng không bằng 0: lớp runtime, networking overlay và quản lý image tốn một ít tài nguyên.</li>
+</ul>
+<p>Trong game: Module Docker giảm một nửa thời gian reboot/restart của App, hạ xác suất deploy lỗi từ 30% xuống 12% (Backend Dev: 12% → 5%), đổi lấy -4% công suất và độ phức tạp +1. Nó cũng là điều kiện để Kubernetes quản lý App.</p>`,
+    pros: ['Môi trường nhất quán, bớt lỗi do drift', 'Khởi động và restart nhanh', 'Đóng gói và rollback đơn giản'],
+    cons: ['Chia sẻ kernel nên cô lập yếu hơn VM', 'Overhead runtime nhỏ nhưng có thật', 'Thêm công đoạn build/registry/bảo mật image'],
+    real: 'Docker được mở mã nguồn năm 2013 và phổ biến hoá container; cô lập dựa trên Linux namespaces và cgroups.',
+    tryIt: 'Cài Module Docker lên một App rồi chạy crash/restart và so thời gian reboot; thử deploy nhiều lần để thấy tỉ lệ bản lỗi giảm.',
+    see: ['comp-docker', 'comp-k8s', 'concept-orchestration', 'inc-baddeploy', 'concept-blast-radius']
   }
 ];

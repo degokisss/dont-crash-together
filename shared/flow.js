@@ -5,7 +5,10 @@ import { clamp, dist } from './util.js';
 
 const CLIENT_TIMEOUT_MS = 3000;
 const USER_RETRY = 0.25;
-const HC_DELAY = { gateway: 3, cdn: 3, lb: 4, app: 2 };
+const HC_DELAY = { gateway: 3, cdn: 3, lb: 4, app: 2, k8s: 1 };
+const K8S_HEAL_DELAY = 6; // giây từ lúc pod chết tới khi k8s dựng lại
+const K8S_ROLLBACK_DELAY = 10; // readiness probe thất bại liên tục bao lâu thì tự rollback
+const BACKUP_EVERY = 30;
 const FAILOVER_DELAY = 6;
 const SEASON_DEMAND = { autumn: 1.0, winter: 0.9, spring: 1.15, summer: 1.35 };
 const BOT_RPS = 20;
@@ -47,6 +50,8 @@ export class Flow {
       if (n.k === 'cdn') n._st.warm = 0;
       if (n.k === 'app') Object.assign(n._st, { pf: 0, br: { state: 'closed', until: 0, strikes: 0 } });
       if (n.k === 'replica') n._st.lag = 0.2;
+      if (n.k === 'k8s') Object.assign(n._st, { heal: {}, badAt: {}, heals: 0, rollbacks: 0 });
+      if (n.k === 'db') n._st.lastBackup = -1;
     }
     return n._st;
   }
@@ -93,6 +98,7 @@ export class Flow {
     const st = this.st(n);
     if (n.k === 'app') {
       cap *= 1 + (n.virt || 0);
+      if (n.cont) cap *= 0.96; // overhead của container runtime
       if (st.mem > 85) cap *= 0.8;
     }
     if (n.k === 'db' || n.k === 'replica') {
@@ -159,6 +165,8 @@ export class Flow {
         case 'queue': this.queue(n, c, dt); break;
         case 'db': this.db(n, c, dt); break;
         case 'replica': this.replica(n, c, dt); break;
+        case 'k8s': this.k8s(n, c, dt); break;
+        case 's3': this.s3(n, c, dt); break;
       }
       this.push(n, c);
     }
@@ -262,10 +270,10 @@ export class Flow {
     }
     c.in = inn;
     this.process(n, c, dt);
-    const def = this.firstBelieved(n, ['lb', 'app'], HC_DELAY.gateway);
-    const cdn = this.firstBelieved(n, ['cdn'], HC_DELAY.gateway);
-    if (cdn) c.routes.push({ id: cdn.id, frac: [1, 0, 0, 0] });
-    if (def) c.routes.push({ id: def.id, frac: [cdn ? 0 : 1, 1, 1, 1] });
+    const def = this.firstBelieved(n, ['k8s', 'lb', 'app'], HC_DELAY.gateway);
+    const stat = this.firstBelieved(n, ['cdn'], HC_DELAY.gateway) || this.firstBelieved(n, ['s3'], HC_DELAY.gateway);
+    if (stat) c.routes.push({ id: stat.id, frac: [1, 0, 0, 0] });
+    if (def) c.routes.push({ id: def.id, frac: [stat ? 0 : 1, 1, 1, 1] });
   }
 
   // ---------- CDN ----------
@@ -275,7 +283,7 @@ export class Flow {
     const hit = 0.92 * st.warm;
     st.hit = hit;
     c.term = [hit, 0, 0, 0];
-    const origin = this.firstBelieved(n, ['lb', 'app'], HC_DELAY.gateway);
+    const origin = this.firstBelieved(n, ['s3', 'k8s', 'lb', 'app'], HC_DELAY.gateway);
     if (origin) c.routes.push({ id: origin.id, frac: [1 - hit, 0, 0, 0] });
   }
 
@@ -284,18 +292,7 @@ export class Flow {
     const st = this.st(n);
     this.process(n, c, dt);
     const targets = this.linked(n, ['app']).filter((t) => this.believed(n, t, HC_DELAY.lb));
-    // autoscaler
-    if (n.asg && c.up && targets.length) {
-      const tmpl = targets[0];
-      let l = 0, cp = 0;
-      for (const t of targets) { const x = this.ctx.get(t.id); if (x) { l += x.load; cp += this.capOf(t); } }
-      const u = cp ? l / cp : 0;
-      const now = this.w.time;
-      if (st.pendingUp && now >= st.pendingUp) { tmpl.virt = Math.min(6, (tmpl.virt || 0) + 1); st.pendingUp = 0; st.nextScale = now + 20; }
-      if (u > 0.7 && !st.pendingUp && (tmpl.virt || 0) < 6 && now >= (st.nextScale || 0)) st.pendingUp = now + 15;
-      if (u < 0.3) { st.lowSince = st.lowSince ?? now; if (now - st.lowSince > 30 && tmpl.virt > 0 && now >= (st.nextScale || 0)) { tmpl.virt--; st.nextScale = now + 20; st.lowSince = now; } } else st.lowSince = null;
-      st.asgU = u;
-    }
+    if (n.asg && c.up && targets.length) this.autoscale(st, targets, 15);
     if (!targets.length) { n._ws = {}; return; }
     const algo = n.cfg.algo;
     const nT = targets.length;
@@ -309,6 +306,76 @@ export class Flow {
     const sum = ws.reduce((a, b) => a + b, 0);
     targets.forEach((t, i) => c.routes.push({ id: t.id, frac: [ws[i] / sum, ws[i] / sum, ws[i] / sum, ws[i] / sum] }));
     st.shares = Object.fromEntries(targets.map((t, i) => [t.id, ws[i] / sum]));
+  }
+
+  // Autoscale nhóm App `targets` (thêm/bớt instance ảo trên App đầu nhóm). `delay` = thời gian khởi động instance mới.
+  autoscale(st, targets, delay) {
+    const tmpl = targets[0];
+    let l = 0, cp = 0;
+    for (const t of targets) { const x = this.ctx.get(t.id); if (x) { l += x.load; cp += this.capOf(t); } }
+    const u = cp ? l / cp : 0;
+    const now = this.w.time;
+    if (st.pendingUp && now >= st.pendingUp) { tmpl.virt = Math.min(6, (tmpl.virt || 0) + 1); st.pendingUp = 0; st.nextScale = now + 20; }
+    if (u > 0.7 && !st.pendingUp && (tmpl.virt || 0) < 6 && now >= (st.nextScale || 0)) st.pendingUp = now + delay;
+    if (u < 0.3) { st.lowSince = st.lowSince ?? now; if (now - st.lowSince > 30 && tmpl.virt > 0 && now >= (st.nextScale || 0)) { tmpl.virt--; st.nextScale = now + 20; st.lowSince = now; } } else st.lowSince = null;
+    st.asgU = u;
+  }
+
+  // ---------- Kubernetes ----------
+  // Ingress + scheduler: chia theo công suất còn trống, readiness probe phát hiện pod chết sau ~1 s.
+  // Với App đã đóng container: tự chữa (restart pod chết), HPA, rollback khi readiness thất bại sau deploy.
+  k8s(n, c, dt) {
+    const w = this.w;
+    const st = this.st(n);
+    this.process(n, c, dt);
+    const pods = this.linked(n, ['app']);
+    const managed = pods.filter((a) => a.cont);
+    st.pods = managed.length;
+    st.heals = st.heals || 0;
+    const now = w.time;
+    if (c.up) {
+      for (const a of managed) {
+        const vis = w.isMonitored(a.x, a.y);
+        if (a.crashed) {
+          if (st.heal[a.id] === undefined) st.heal[a.id] = now + K8S_HEAL_DELAY;
+          if (now >= st.heal[a.id]) {
+            delete st.heal[a.id];
+            a.crashed = false;
+            a.hp = Math.max(a.hp, a.mhp * 0.5);
+            w.startReboot(a, 4);
+            st.heals++;
+            if (vis) { w.say('Kubernetes tự khởi động lại pod App đã chết (self-healing).', 'good'); w.unlock('concept-orchestration'); }
+          }
+        } else delete st.heal[a.id];
+        if (a.bad && !a.crashed) {
+          if (st.badAt[a.id] === undefined) st.badAt[a.id] = now;
+          if (now - st.badAt[a.id] >= K8S_ROLLBACK_DELAY) {
+            delete st.badAt[a.id];
+            a.bad = false;
+            a.ver = Math.max(1, a.ver - 1);
+            w.startReboot(a, 1);
+            st.rollbacks = (st.rollbacks || 0) + 1;
+            if (vis) { w.say(`Readiness probe thất bại: Kubernetes tự rollback App về v${a.ver}.`, 'good'); w.unlock('concept-orchestration'); }
+            w.director.onRollback(a);
+          }
+        } else delete st.badAt[a.id];
+      }
+    }
+    const targets = pods.filter((t) => this.believed(n, t, HC_DELAY.k8s));
+    const live = targets.filter((t) => t.cont);
+    if (c.up && live.length) this.autoscale(st, live, 8);
+    if (!targets.length) return;
+    const ws = targets.map((t) => this.capOf(t) * Math.max(0.05, 1 - Math.min(1, this.st(t).util || 0)));
+    const sum = ws.reduce((a, b) => a + b, 0);
+    targets.forEach((t, i) => c.routes.push({ id: t.id, frac: [ws[i] / sum, ws[i] / sum, ws[i] / sum, ws[i] / sum] }));
+    st.shares = Object.fromEntries(targets.map((t, i) => [t.id, ws[i] / sum]));
+  }
+
+  // ---------- Object storage ----------
+  // Phục vụ lớp tĩnh tại chỗ: rất rẻ cho compute, nhưng chậm hơn CDN/cache.
+  s3(n, c, dt) {
+    this.process(n, c, dt);
+    c.term = [1, 0, 0, 0];
   }
 
   // ---------- App ----------
@@ -513,8 +580,15 @@ export class Flow {
     // đĩa
     if (dbUp) {
       const GB = COMP.db.disk[Math.min(n.tier, 3) - 1];
+      // Backup/archival sang Object Storage: snapshot định kỳ + dữ liệu lạnh được đẩy ra khỏi đĩa DB
+      const bk = this.linked(n, ['s3']).find((t) => this.up(t) && !this.cut(n, t));
+      st.backupOn = !!bk;
+      if (bk && !st.corrupt) {
+        st.bkAge = (st.bkAge || 0) + dt;
+        if (st.bkAge >= BACKUP_EVERY) { st.bkAge = 0; st.sinceBackup = 0; st.lastBackup = now; }
+      }
       const writesAcc = (leaderIsDb && writable ? orig[2] * c.okSelf : 0) + (!leaderIsDb && writable ? orig[2] : 0);
-      st.disk = clamp(st.disk + writesAcc * dt * 0.00003 * (60 / GB) * (cfg.retention ? 0.4 : 1) * this.mods.diskRate, 0, 1);
+      st.disk = clamp(st.disk + writesAcc * dt * 0.00003 * (60 / GB) * (cfg.retention ? 0.4 : 1) * (bk ? 0.75 : 1) * this.mods.diskRate, 0, 1);
       st.sinceBackup += writesAcc * dt;
       st.disk = Math.round(st.disk * 10000) / 10000;
     }
@@ -561,8 +635,15 @@ export class Flow {
     }
   }
 
-  // Có điểm khôi phục không? (khôi phục chỉ hỏi câu này, không quan tâm snapshot nằm ở đâu)
-  hasSnapshot(db) { return db.cfg.backup !== 'off' && this.st(db).lastBackupAt !== null; }
+  // Thời điểm của điểm khôi phục mới nhất (null = chưa có). Hai nguồn độc lập: snapshot theo cfg.backup (lastBackupAt, bị xoá khi tắt Backup)
+  // và snapshot sang Object Storage (lastBackup, nằm ở S3 nên tắt Backup không xoá được). Khôi phục chỉ cần biết điểm nào mới nhất.
+  snapshotAt(db) {
+    const st = this.st(db);
+    const local = db.cfg.backup !== 'off' ? st.lastBackupAt : null;
+    const s3 = (st.lastBackup ?? -1) >= 0 ? st.lastBackup : null;
+    return local === null ? s3 : s3 === null ? local : Math.max(local, s3);
+  }
+  hasSnapshot(db) { return this.snapshotAt(db) !== null; }
   // Số bản ghi sẽ mất nếu phải quay về snapshot cuối (RPO thực tế)
   atRisk(db) { return Math.round(this.st(db).sinceBackup * DATALOSS.loss); }
 
@@ -663,11 +744,15 @@ export class Flow {
         case 'cache': m.hit = round(st.hit || 0, 2); m.warm = round(st.warm, 2); if (st.crushed) m.crush = 1; break;
         case 'cdn': m.hit = round(st.hit || 0, 2); break;
         case 'queue': m.q = Math.round(st.q); m.lag = round(st.lag, 1); m.full = round(st.fullness || 0, 2); break;
-        case 'db':
+        case 'db': {
+          const at = this.snapshotAt(n);
           m.disk = round(st.disk, 3); m.lag = round(st.lag, 1); m.why = st.why || ''; m.split = st.split ? 1 : 0; m.writable = st.writable ? 1 : 0;
-          m.snapAge = st.lastBackupAt === null ? null : Math.round(w.time - st.lastBackupAt); m.rpo = this.atRisk(n); m.snap = st.snapUntil ? 1 : 0; m.corrupt = st.corrupt ? 1 : 0;
+          m.snapAge = at === null ? null : Math.round(w.time - at); m.rpo = this.atRisk(n); m.snap = st.snapUntil ? 1 : 0; m.corrupt = st.corrupt ? 1 : 0;
+          m.bkOn = st.backupOn ? 1 : 0; m.bk = (st.lastBackup ?? -1) >= 0 ? Math.round(w.time - st.lastBackup) : -1;
           break;
+        }
         case 'replica': m.lag = round(st.lag || 0, 1); break;
+        case 'k8s': m.pods = st.pods || 0; m.heals = st.heals || 0; m.rollbacks = st.rollbacks || 0; m.asg = st.asgU !== undefined ? round(st.asgU, 2) : undefined; m.shares = st.shares; break;
         case 'lb': m.asg = st.asgU !== undefined ? round(st.asgU, 2) : undefined; m.shares = st.shares; break;
         case 'gateway': m.limited = Math.round(st.limited || 0); m.blocked = Math.round(st.blocked || 0); break;
       }
@@ -721,7 +806,7 @@ export class Flow {
         }
       }
       if (kind === 'term') {
-        const note = { cdn: 'HIT ở edge — không cần về origin', cache: 'HIT — trả ngay từ RAM', app: 'xử lý logic', db: k === 2 ? 'ghi vào primary' : 'đọc từ primary', replica: 'đọc từ replica', queue: `nhận ghi vào hàng đợi (ack sớm), backlog ${Math.round((this.st(n).q) || 0)}`, gateway: 'xử lý' }[n.k] || 'xử lý';
+        const note = { cdn: 'HIT ở edge — không cần về origin', cache: 'HIT — trả ngay từ RAM', app: 'xử lý logic', db: k === 2 ? 'ghi vào primary' : 'đọc từ primary', replica: 'đọc từ replica', s3: 'đọc object từ Object Storage (bền, nhưng chậm hơn CDN/cache)', queue: `nhận ghi vào hàng đợi (ack sớm), backlog ${Math.round((this.st(n).q) || 0)}`, gateway: 'xử lý' }[n.k] || 'xử lý';
         push(c, n.k === 'cache' || n.k === 'cdn' ? 'hit' : 'ok', note);
         return true;
       }
@@ -734,7 +819,7 @@ export class Flow {
         return fail(c, 'noroute', 'drop', routes.length || c.term.some((x) => x > 0) ? 'không có đích còn sống' : 'chưa nối cáp tới đích');
       }
       const child = this.ctx.get(choice.id);
-      const note = { cdn: 'MISS — về origin', cache: 'MISS — xuống DB', lb: `chia tải → ${child.n.k} #${child.n.id}`, gateway: child.n.k === 'cdn' ? 'tĩnh → CDN' : `chuyển tiếp → ${child.n.k} #${child.n.id}`, app: choice.frac[2] > 0 ? 'gọi nơi lưu dữ liệu để ghi' : 'gọi nơi lưu dữ liệu để đọc', queue: 'xả vào DB', db: 'đọc từ replica' }[n.k] || 'chuyển tiếp';
+      const note = { cdn: 'MISS — về origin', cache: 'MISS — xuống DB', lb: `chia tải → ${child.n.k} #${child.n.id}`, k8s: `scheduler → pod ${child.n.k} #${child.n.id}`, gateway: child.n.k === 'cdn' ? 'tĩnh → CDN' : child.n.k === 's3' ? 'tĩnh → Object Storage' : `chuyển tiếp → ${child.n.k} #${child.n.id}`, app: choice.frac[2] > 0 ? 'gọi nơi lưu dữ liệu để ghi' : 'gọi nơi lưu dữ liệu để đọc', queue: 'xả vào DB', db: 'đọc từ replica' }[n.k] || 'chuyển tiếp';
       push(c, 'ok', note);
       if (this.cut(n, child.n)) return fail(child, 'cut', 'cut', 'cáp bị đứt (network partition)');
       const attempts = 1 + Math.min(3, Math.floor((choice.retry || 0) + rng()));

@@ -54,13 +54,15 @@ const CFG = {
 };
 
 const SEMANTIC = {
-  gateway: 'Gateway gửi tới <b>một</b> đích còn sống đầu tiên trong danh sách (failover theo thứ tự). Request tĩnh đi qua CDN nếu có.',
-  cdn: 'CDN miss sẽ về <b>origin</b> (đích còn sống đầu tiên).',
+  gateway: 'Gateway gửi tới <b>một</b> đích còn sống đầu tiên trong danh sách (failover theo thứ tự). Request tĩnh đi qua CDN, hoặc thẳng tới Object Storage nếu không có CDN.',
+  cdn: 'CDN miss sẽ về <b>origin</b> (đích còn sống đầu tiên: S3, Kubernetes, LB hoặc App).',
   lb: 'LB chia tải cho mọi App còn sống theo thuật toán. Phát hiện node chết sau ~4 s.',
+  k8s: 'Chia tải theo công suất còn trống, phát hiện pod chết sau ~1 s. Với App <b>đã đóng container</b> (Module Docker): tự khởi động lại pod chết (~6 s), HPA khi tải &gt;70%, và tự rollback khi deploy lỗi (~10 s). App chưa đóng container chỉ được chia tải.',
+  s3: 'Phục vụ request <b>tĩnh</b> rất rẻ cho compute (chậm hơn CDN). DB nối tới S3 sẽ có <b>backup</b> mỗi 30 s và đĩa đầy chậm hơn.',
   app: 'Đọc → Cache (nếu có) rồi DB; ghi → Queue (nếu có) hoặc DB. Dùng đích đầu tiên còn sống.',
   cache: 'Cache miss đi xuống DB.',
   queue: 'Queue xả dần vào DB theo công suất DB còn trống.',
-  db: 'Replica nhận một phần đọc của DB.',
+  db: 'Replica nhận một phần đọc của DB. Nối DB → S3 để có backup định kỳ (replica không thay được backup).',
 };
 
 export const Inspector = {
@@ -104,7 +106,7 @@ export const Inspector = {
     const near = me && Math.hypot(me.x - e.x, me.y - e.y) <= HANDS_ON_R + (e.w || 1) * TILE / 2;
     const codexId = 'comp-' + e.k;
     const status = e.crashed ? '<span class="badge bad">Crash</span>' : e.rb ? '<span class="badge warn">Đang khởi động lại…</span>' : COMP[e.k] || S.watts || e.k === 'generator' ? (e.on ? '<span class="badge good">Đang chạy</span>' : '<span class="badge bad">Mất điện</span>') : '';
-    let h = `<div class="ph">${img(e.k, 30)}<div class="pt"><b>${S.name}</b><small>${e.tier > 1 || COMP[e.k] && COMP[e.k].cap.length > 1 ? 'Tier ' + e.tier : ''}${e.ver ? ' · v' + e.ver : ''}${e.shards > 1 ? ' · ' + e.shards + ' shard' : ''}</small></div>${status}<button data-x title="Đóng">×</button></div>`;
+    let h = `<div class="ph">${img(e.k, 30)}<div class="pt"><b>${S.name}</b><small>${e.tier > 1 || COMP[e.k] && COMP[e.k].cap.length > 1 ? 'Tier ' + e.tier : ''}${e.ver ? ' · v' + e.ver : ''}${e.cont ? ' · container' : ''}${e.shards > 1 ? ' · ' + e.shards + ' shard' : ''}</small></div>${status}<button data-x title="Đóng">×</button></div>`;
     h += `<div class="hpbar" title="Độ bền"><i style="width:${(e.hp / e.mhp) * 100}%"></i></div>`;
     if (!near && (COMP[e.k] || e.k === 'generator' || e.k === 'stove' || e.k === 'chest')) h += `<div class="farhint">Đứng gần hơn để thao tác trực tiếp (sửa, nâng cấp, nạp nhiên liệu…). Cấu hình từ xa vẫn được.</div>`;
     h += `<div id="metrics" class="metrics">${metricsHTML(e)}</div>`;
@@ -148,8 +150,8 @@ export const Inspector = {
 function signature(e) {
   const me = G.me();
   const near = me ? Math.hypot(me.x - e.x, me.y - e.y) <= HANDS_ON_R + (e.w || 1) * TILE / 2 : false;
-  const inv = me ? ['wood', 'coal', 'scrap', 'copper', 'silicon', 'fiber', 'waf_module', 'asg_module', 'bean', 'mushroom'].map((k) => me.inv.reduce((a, s) => a + (s && s.i === k ? s.n : 0), 0)).join(',') : '';
-  return JSON.stringify([e.id, e.tier, e.cfg, e.links, e.crashed, e.rb, e.on, e.waf, e.asg, e.shards, e.ver, e.cooking, e.done, e.inv, near, inv, G.codex.size, Math.round(e.fuel / 10)]);
+  const inv = me ? ['wood', 'coal', 'scrap', 'copper', 'silicon', 'fiber', 'waf_module', 'asg_module', 'docker_module', 'bean', 'mushroom'].map((k) => me.inv.reduce((a, s) => a + (s && s.i === k ? s.n : 0), 0)).join(',') : '';
+  return JSON.stringify([e.id, e.tier, e.cfg, e.links, e.crashed, e.rb, e.on, e.waf, e.asg, e.cont, e.shards, e.ver, e.cooking, e.done, e.inv, near, inv, G.codex.size, Math.round(e.fuel / 10)]);
 }
 
 function bar(v, cls = '') {
@@ -175,13 +177,14 @@ function metricsHTML(e) {
     <div class="mrow"><span>Tỉ lệ lỗi (node)</span><b class="${m.err > 0.02 ? 'bad' : ''}">${(m.err * 100).toFixed(1)}%</b></div>`;
   const r = (l, v, cls = '') => `<div class="mrow"><span>${l}</span><b class="${cls}">${v}</b></div>`;
   switch (e.k) {
-    case 'app': h += r('Bộ nhớ', m.mem + '%', m.mem > 70 ? 'warn' : '') + bar(m.mem / 100, m.mem > 85 ? 'bad' : m.mem > 60 ? 'warn' : 'good') + r('Hệ số khuếch đại retry', '×' + m.amp, m.amp > 1.3 ? 'warn' : '') + r('Breaker', { closed: 'đóng', open: 'MỞ', half: 'nửa mở' }[m.br] || '—', m.br === 'open' ? 'bad' : '') + (e.virt ? r('Instance ảo (autoscale)', '+' + e.virt) : ''); break;
+    case 'app': h += r('Bộ nhớ', m.mem + '%', m.mem > 70 ? 'warn' : '') + bar(m.mem / 100, m.mem > 85 ? 'bad' : m.mem > 60 ? 'warn' : 'good') + r('Hệ số khuếch đại retry', '×' + m.amp, m.amp > 1.3 ? 'warn' : '') + r('Breaker', { closed: 'đóng', open: 'MỞ', half: 'nửa mở' }[m.br] || '—', m.br === 'open' ? 'bad' : '') + (e.virt ? r('Instance ảo (autoscale)', '+' + e.virt) : '') + r('Container', e.cont ? 'có' : 'không'); break;
     case 'cache': h += r('Hit ratio', Math.round(m.hit * 100) + '%') + r('Độ ấm (warm-up)', Math.round(m.warm * 100) + '%') + (m.crush ? '<div class="alert">STAMPEDE: key hết hạn cùng lúc!</div>' : ''); break;
     case 'cdn': h += r('Hit ratio', Math.round(m.hit * 100) + '%'); break;
     case 'queue': h += r('Backlog', m.q + ' msg') + bar(m.full, m.full > 0.8 ? 'bad' : m.full > 0.4 ? 'warn' : 'good') + r('Lag', m.lag + ' s', m.lag > 10 ? 'warn' : ''); break;
-    case 'db': h += r('Đĩa', Math.round(m.disk * 100) + '%', m.disk > 0.8 ? 'bad' : '') + bar(m.disk, m.disk > 0.9 ? 'bad' : m.disk > 0.7 ? 'warn' : 'good') + r('Replication lag', m.lag + ' s', m.lag > 3 ? 'warn' : '') + (m.why ? `<div class="alert">Ghi bị chặn: ${esc(m.why)}</div>` : '') + (m.split ? '<div class="alert">SPLIT-BRAIN: hai leader!</div>' : '') + r('Vai trò', e.leader ? 'leader' : 'follower'); break;
+    case 'db': h += r('Đĩa', Math.round(m.disk * 100) + '%', m.disk > 0.8 ? 'bad' : '') + bar(m.disk, m.disk > 0.9 ? 'bad' : m.disk > 0.7 ? 'warn' : 'good') + r('Replication lag', m.lag + ' s', m.lag > 3 ? 'warn' : '') + (m.bkOn || m.bk >= 0 ? r('Snapshot S3', m.bk >= 0 ? m.bk + ' s trước' : 'đang chờ snapshot đầu') : '') + (m.why ? `<div class="alert">Ghi bị chặn: ${esc(m.why)}</div>` : '') + (m.split ? '<div class="alert">SPLIT-BRAIN: hai leader!</div>' : '') + r('Vai trò', e.leader ? 'leader' : 'follower'); break;
     case 'replica': h += r('Replication lag', m.lag + ' s', m.lag > 3 ? 'warn' : '') + r('Vai trò', e.leader ? 'leader (được thăng cấp)' : 'follower'); break;
     case 'lb': if (m.shares) h += Object.entries(m.shares).map(([id, s]) => { const t = G.ents.get(+id); return r('→ ' + (t ? STRUCTS[t.k].name + ' #' + id : id), Math.round(s * 100) + '%'); }).join(''); if (m.asg !== undefined) h += r('Autoscaler: util nhóm', Math.round(m.asg * 100) + '%'); break;
+    case 'k8s': h += r('Pod đã đóng container', m.pods) + r('Tự chữa / rollback', m.heals + ' / ' + m.rollbacks) + (m.shares ? Object.entries(m.shares).map(([id, s]) => { const t = G.ents.get(+id); return r('→ ' + (t ? STRUCTS[t.k].name + ' #' + id + (t.cont ? '' : ' (chưa container)') : id), Math.round(s * 100) + '%'); }).join('') : '') + (m.asg !== undefined ? r('HPA: util nhóm', Math.round(m.asg * 100) + '%') : ''); break;
     case 'gateway': h += r('Bị rate limit', m.limited + '/s') + r('Bị WAF chặn', m.blocked + '/s'); break;
   }
   if (e.k === 'db') h += backupHTML(e, m, r);
@@ -189,7 +192,7 @@ function metricsHTML(e) {
 }
 
 function backupHTML(e, m, r) {
-  const off = e.cfg.backup === 'off';
+  const off = e.cfg.backup === 'off' && !m.bkOn && m.bk < 0;
   const age = m.snapAge === null ? 'chưa có' : `${m.snapAge} giây trước`;
   return (m.corrupt ? '<div class="alert">DỮ LIỆU HỎNG: một phần đọc/ghi thất bại, replica cũng sao chép lỗi và failover không chữa được. Hãy khôi phục từ backup.</div>' : '')
     + r('Backup gần nhất', off ? 'đang tắt' : m.snap ? `${age} · đang snapshot…` : age, off ? 'warn' : '')
@@ -200,7 +203,8 @@ function backupHTML(e, m, r) {
 function restoreHTML(e, me, near) {
   const m = G.sys && G.sys.n[e.id];
   if (m && !m.corrupt) return '';
-  if (e.cfg.backup === 'off' || (m && m.snapAge === null)) return `<button class="btn small" disabled>Khôi phục từ backup <small>(${e.cfg.backup === 'off' ? 'Backup đang tắt' : 'chưa có snapshot'})</small></button>`;
+  const off = e.cfg.backup === 'off' && !(m ? m.bkOn || m.bk >= 0 : e.links.some((id) => { const t = G.ents.get(id); return t && t.k === 's3'; }));
+  if (off || (m && m.snapAge === null)) return `<button class="btn small" disabled>Khôi phục từ backup <small>(${off ? 'Backup đang tắt' : 'chưa có snapshot'})</small></button>`;
   const secs = DATALOSS.restore / (me && me.role === 'dba' ? 2 : 1);
   return `<button class="btn small ${m ? 'primary' : ''}" data-act="restore" ${near ? '' : 'disabled'}>Khôi phục từ backup <small>(DB reboot ~${secs} s)</small></button>`;
 }
@@ -238,6 +242,7 @@ function actions(e, near) {
   }
   if (e.k === 'gateway') h += e.waf ? '<span class="badge good">WAF đã lắp</span>' : `<button class="btn small" data-act="install" ${near && haveCount(me, 'waf_module') ? '' : 'disabled'}>Lắp module WAF (${haveCount(me, 'waf_module')})</button>`;
   if (e.k === 'lb') h += e.asg ? '<span class="badge good">Autoscaler đã lắp</span>' : `<button class="btn small" data-act="install" ${near && haveCount(me, 'asg_module') ? '' : 'disabled'}>Lắp Autoscaler (${haveCount(me, 'asg_module')})</button>`;
+  if (e.k === 'app') h += e.cont ? '<span class="badge good">Container (Docker)</span>' : `<button class="btn small" data-act="install" ${near && haveCount(me, 'docker_module') ? '' : 'disabled'}>Đóng container — Module Docker (${haveCount(me, 'docker_module')})</button>`;
   return h;
 }
 

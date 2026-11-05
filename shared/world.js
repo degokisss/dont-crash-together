@@ -17,7 +17,7 @@ import { CODEX_INCIDENTS } from './codex_incidents.js';
 
 const CODEX_IDS = new Set([...CODEX_COMPONENTS, ...CODEX_INCIDENTS].map((e) => e.id));
 
-const COMPLEX = { gateway: 1, cdn: 2, lb: 2, app: 2, cache: 3, queue: 3, db: 3, replica: 2.5, generator: 1, lantern: 1, turret: 1.5 };
+const COMPLEX = { gateway: 1, cdn: 2, lb: 2, app: 2, cache: 3, queue: 3, db: 3, replica: 2.5, s3: 2, k8s: 6, generator: 1, lantern: 1, turret: 1.5 };
 const TEAM_CAP = 24; // độ phức tạp mà 1 kỹ sư xử lý thoải mái
 
 export class World {
@@ -127,7 +127,7 @@ export class World {
       case 'generator': e.fuel = 0; e.mf = 200; break;
       case 'gateway': e.waf = false; e.cfg = { rl: 0 }; break;
       case 'lb': e.asg = false; e.cfg = { algo: 'rr' }; break;
-      case 'app': e.ver = 1; e.bad = false; e.virt = 0; e.cfg = { retries: 1, backoff: false, breaker: false }; break;
+      case 'app': e.ver = 1; e.bad = false; e.virt = 0; e.cont = false; e.cfg = { retries: 1, backoff: false, breaker: false }; break;
       case 'cache': e.cfg = { ttl: 30, jitter: false, coalesce: false }; break;
       case 'db': e.shards = 1; e.leader = true; e.cfg = { repl: 'async', failover: 'off', retention: false, salt: false, backup: 'off' }; break;
       case 'lantern': e.cfg = { alert: 'normal' }; break;
@@ -521,7 +521,7 @@ export class World {
     e._by = p.name;
     this.fx('boom', e.x, e.y);
     this.unlock('comp-' + r.place);
-    if (r.place === 'archlab') this.say('Phòng lab kiến trúc cho phép chế Cache, Queue, CDN, Replica, Tháp tường lửa — nhưng bạn phải học từng công thức bằng Điểm kiến thức (bảng Xây, phím C).', 'good');
+    if (r.place === 'archlab') this.say('Phòng lab kiến trúc cho phép chế Cache, Queue, CDN, Replica, S3, Module Docker, Tháp tường lửa — nhưng bạn phải học từng công thức bằng Điểm kiến thức (bảng Xây, phím C).', 'good');
     if (r.place === 'chaoslab') this.say('Chaos Lab: kích hoạt sự cố có kiểm soát ("game day") để luyện tập.', 'good');
     this.flow.dirty = true;
   }
@@ -567,15 +567,23 @@ export class World {
     this.startReboot(e, p.role === 'sre' ? 4 : 8);
   }
 
+  // Container (Docker) khởi động nhanh gấp đôi.
   startReboot(e, secs) {
     e.rb = true;
-    e._rbAt = this.time + secs;
+    e._rbAt = this.time + (e.cont ? Math.max(1, secs * 0.5) : secs);
     const st = e._st;
     if (st) st.warm = 0;
   }
 
+  // Kubernetes (đang chạy) quản lý App này? Chỉ App đã đóng container mới được quản lý.
+  orchestrator(e) {
+    if (!e.cont) return null;
+    for (const s of this.structs) if (s.k === 'k8s' && s.on && !s.crashed && !s.rb && s.links.includes(e.id)) return s;
+    return null;
+  }
+
   c_restart(p, m) { // restart chủ động (reset mem, bộ nhớ đệm ấm lại...)
-    const e = this.struct(m.id, ['app', 'cache', 'queue', 'db', 'replica', 'lb', 'cdn', 'gateway']);
+    const e = this.struct(m.id, ['app', 'cache', 'queue', 'db', 'replica', 'lb', 'cdn', 'gateway', 's3', 'k8s']);
     if (!e || !this.near(p, e)) return this.say('Lại gần hơn để restart.', 'warn', p.pid);
     if (e._st) { e._st.mem = 0; e._st.leak = false; }
     this.startReboot(e, p.role === 'sre' ? 3 : 6);
@@ -666,8 +674,10 @@ export class World {
     if (e.rb) return;
     e.ver++;
     e._prevBad = e.bad;
-    this.startReboot(e, 5);
-    const bad = this.rng() < (p.role === 'backend' ? 0.12 : 0.3);
+    const orch = this.orchestrator(e);
+    this.startReboot(e, orch ? 1 : 5); // rolling update: pod mới lên trước khi pod cũ tắt
+    const badRate = e.cont ? (p.role === 'backend' ? 0.05 : 0.12) : (p.role === 'backend' ? 0.12 : 0.3); // image bất biến → ít "chạy được trên máy tôi"
+    const bad = this.rng() < badRate;
     e.bad = bad;
     e._deployAt = this.time;
     this.unlock('concept-blast-radius');
@@ -715,8 +725,7 @@ export class World {
     if (e.rb) return;
     if (e.crashed) return this.say('DB đang crash: sửa & reboot trước rồi mới khôi phục được.', 'warn', p.pid);
     const st = this.flow.st(e);
-    if (e.cfg.backup === 'off') return this.say('Backup đang tắt nên không có snapshot nào để khôi phục. Replica không thay thế được backup.', 'warn', p.pid);
-    if (!this.flow.hasSnapshot(e)) return this.say('Chưa có snapshot nào hoàn tất để khôi phục.', 'warn', p.pid);
+    if (!this.flow.hasSnapshot(e)) return this.say(e.cfg.backup === 'off' && !st.backupOn ? 'Backup đang tắt và DB chưa nối Object Storage nên không có snapshot nào để khôi phục. Replica không thay thế được backup.' : 'Chưa có snapshot nào hoàn tất để khôi phục.', 'warn', p.pid);
     if (!st.corrupt) return this.say('Dữ liệu DB này không bị hỏng: khôi phục sẽ chỉ làm mất các ghi sau snapshot cuối.', 'warn', p.pid);
     const lost = this.flow.atRisk(e);
     st.corrupt = null;
@@ -732,12 +741,15 @@ export class World {
   c_oncall(p) { this.alerts.take(p); }
 
   c_install(p, m) {
-    const e = this.struct(m.id, ['gateway', 'lb']);
+    const e = this.struct(m.id, ['gateway', 'lb', 'app']);
     if (!e || !this.near(p, e)) return this.say('Lại gần hơn để lắp module.', 'warn', p.pid);
     if (e.k === 'gateway' && !e.waf && this.invCount(p.inv, 'waf_module') > 0) {
       this.invRemove(p.inv, 'waf_module', 1); e.waf = true; this.unlock('comp-turret');
     } else if (e.k === 'lb' && !e.asg && this.invCount(p.inv, 'asg_module') > 0) {
       this.invRemove(p.inv, 'asg_module', 1); e.asg = true; this.unlock('concept-autoscaling');
+    } else if (e.k === 'app' && !e.cont && this.invCount(p.inv, 'docker_module') > 0) {
+      this.invRemove(p.inv, 'docker_module', 1); e.cont = true; this.unlock('comp-docker'); this.unlock('concept-containers');
+      this.startReboot(e, 4); // đóng gói lại thành container: khởi động lại một lần
     } else return this.say('Không có module phù hợp trong túi.', 'warn', p.pid);
     this.say('Đã lắp module.', 'good');
   }
@@ -1070,6 +1082,7 @@ export class World {
       }
       if (s.shards > 1) cx += (s.shards - 1) * 2;
       if (s.asg) cx += 2;
+      if (s.cont) cx += 1;
       if (s.waf) cx += 1;
       if (s.virt) cx += s.virt * 0.3;
       if (s.tier > 1) cx += (s.tier - 1) * 0.5;

@@ -69,6 +69,7 @@ export const ITEMS = {
   duck: { name: 'Vịt cao su', stack: 1, type: 'misc', sanityAura: 0.12, desc: 'Rubber-duck debugging: giữ trong túi để hồi tỉnh táo.' },
   waf_module: { name: 'Module WAF', stack: 5, type: 'module', desc: 'Lắp vào API Gateway để chặn request độc hại.' },
   asg_module: { name: 'Module Autoscaler', stack: 5, type: 'module', desc: 'Lắp vào Load Balancer để tự động thêm/bớt instance.' },
+  docker_module: { name: 'Module Docker', stack: 5, type: 'module', desc: 'Đóng gói App thành container: khởi động nhanh, deploy ít rủi ro, và để Kubernetes quản lý được.' },
 };
 
 // ---------- Công trình (không phải component hệ thống) ----------
@@ -81,6 +82,8 @@ export const STRUCTS = {
   cache: { name: 'Cache (Redis)', w: 1, h: 1, hp: 100, comp: true },
   queue: { name: 'Message Queue', w: 1, h: 1, hp: 100, comp: true },
   db: { name: 'Database', w: 1, h: 1, hp: 160, comp: true },
+  s3: { name: 'Object Storage (S3)', w: 1, h: 1, hp: 110, comp: true },
+  k8s: { name: 'Kubernetes Cluster', w: 2, h: 1, hp: 200, comp: true },
   replica: { name: 'Read Replica', w: 1, h: 1, hp: 140, comp: true },
   generator: { name: 'Máy phát điện', w: 1, h: 1, hp: 150, power: true, light: 150 },
   lantern: { name: 'Đèn giám sát (Monitoring)', w: 1, h: 1, hp: 80, watts: 1, light: 300, monitor: 300 },
@@ -95,9 +98,11 @@ export const STRUCTS = {
 
 // Thông số component hệ thống. Mảng theo tier (index 0 = tier 1).
 export const COMP = {
-  gateway: { layer: 0, watts: [1], cap: [1500], base: [3], out: ['cdn', 'lb', 'app'] },
-  cdn: { layer: 1, watts: [1], cap: [4000], base: [8], out: ['lb', 'app'] },
+  gateway: { layer: 0, watts: [1], cap: [1500], base: [3], out: ['cdn', 'k8s', 'lb', 'app', 's3'] },
+  cdn: { layer: 1, watts: [1], cap: [4000], base: [8], out: ['s3', 'k8s', 'lb', 'app'] },
   lb: { layer: 2, watts: [1], cap: [1200], base: [2], out: ['app'] },
+  // Orchestrator: ingress + scheduler. Chỉ tự chữa / autoscale / rolling-update các App đã đóng container (Module Docker).
+  k8s: { layer: 2, watts: [4], cap: [2500], base: [4], out: ['app'] },
   app: {
     layer: 3, watts: [2, 3, 5], cap: [150, 320, 700], base: [25, 22, 20], out: ['cache', 'db', 'queue'],
     upgrade: [null, { copper: 6, silicon: 4, fiber: 1 }, { copper: 12, silicon: 8, fiber: 3 }],
@@ -110,8 +115,10 @@ export const COMP = {
     layer: 4, watts: [1, 2], cap: [3000, 5000], buffer: [4000, 12000], base: [4, 4], out: ['db'],
     upgrade: [null, { copper: 5, silicon: 4, fiber: 1 }],
   },
+  // Object storage: nơi lưu object tĩnh (và đích backup của DB). Độ bền cao, độ trễ cao hơn RAM/CDN, công suất rất lớn.
+  s3: { layer: 4, watts: [1], cap: [6000], base: [45], out: [] },
   db: {
-    layer: 5, watts: [2, 3, 5], cap: [220, 480, 1000], base: [15, 13, 12], disk: [60, 150, 400], out: ['replica'],
+    layer: 5, watts: [2, 3, 5], cap: [220, 480, 1000], base: [15, 13, 12], disk: [60, 150, 400], out: ['replica', 's3'],
     upgrade: [null, { copper: 8, silicon: 6, fiber: 2 }, { copper: 14, silicon: 10, fiber: 4 }],
     shardCost: { copper: 6, silicon: 4, fiber: 1 },
   },
@@ -130,6 +137,8 @@ export const COST = {
   cdn: [0.1, 0.1, 0.1, 0.1],
   lb: [0.3, 0.3, 0.3, 0.3],
   app: [1, 2, 3, 2],
+  k8s: [0.4, 0.4, 0.4, 0.4],
+  s3: [0.1, 0.1, 0.1, 0.1],
   cache: [0.3, 0.3, 0.3, 0.3],
   queue: [0, 0, 0.2, 0],
   db: [0, 2, 5, 2],
@@ -187,6 +196,9 @@ export const RECIPES = [
   { id: 'waf_module', cat: 'adv', name: 'Module WAF', station: 2, kp: 3, ing: { fiber: 2, silicon: 3, scrap: 2 }, out: { item: 'waf_module', n: 1 } },
   { id: 'chaoslab', cat: 'adv', name: 'Chaos Lab', station: 2, kp: 4, ing: { wood: 6, silicon: 6, copper: 6, fiber: 3, coal: 2 }, place: 'chaoslab' },
   { id: 'asg_module', cat: 'adv', name: 'Module Autoscaler', station: 3, kp: 4, ing: { fiber: 3, copper: 6, silicon: 6, scrap: 4 }, out: { item: 'asg_module', n: 1 } },
+  { id: 'docker_module', cat: 'adv', name: 'Module Docker', station: 2, kp: 2, ing: { copper: 3, silicon: 3, scrap: 2 }, out: { item: 'docker_module', n: 1 } },
+  { id: 's3', cat: 'adv', name: 'Object Storage (S3)', station: 2, kp: 2, ing: { wood: 3, silicon: 3, copper: 3, scrap: 2 }, place: 's3' },
+  { id: 'k8s', cat: 'adv', name: 'Kubernetes Cluster', station: 3, kp: 5, ing: { wood: 6, silicon: 6, copper: 8, fiber: 3, scrap: 4 }, place: 'k8s' },
 ];
 export const RECIPE_CATS = [
   { id: 'tool', name: 'Dụng cụ' },
@@ -236,10 +248,11 @@ export const PLAYER = {
 //  item:    item, n
 //  structures (STRUCTS keys): tx, ty, w, h, hp, mhp, on(bool có điện/hoạt động), crashed, tier, rb(đang reboot)
 //    generator: fuel, mf (nhiên liệu tối đa)
-//    app: bad (bản deploy lỗi), virt (số instance ảo từ autoscaler), ver
+//    app: bad (bản deploy lỗi), virt (số instance ảo từ autoscaler), ver, cont (bool: đã lắp Module Docker)
 //    lb: algo('rr'|'lc'|'hash'), asg(bool)
 //    db: shards, leader(bool = đang là leader), disk(0..1)
 //    gateway: waf(bool)
+//    k8s, s3: không có trường riêng (k8s: links tới App; s3: đích của gateway/cdn/db)
 //    turret: fire(bool đang bắn)
 //    stove: cooking(item id|null), done(bool)
 //    chest: inv[]

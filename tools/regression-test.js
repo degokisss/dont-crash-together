@@ -459,3 +459,142 @@ run('a save from before alerting loads with the lantern on the default alert lev
   for (let i = 0; i < 2 / DT; i++) w.step(DT);
   assert.ok([...w.structs].filter((s) => s.k === 'lantern').every((l) => l.cfg.alert === 'normal'));
 });
+
+// ---------- Object Storage / Docker / Kubernetes ----------
+function rig() {
+  const room = new Room({ seed: 77 });
+  const w = room.world;
+  const p = room.join({ send() {} }, { name: 'T', token: 'a' });
+  const S = (k) => [...w.structs].filter((s) => s.k === k);
+  w.addStruct('generator', 47, 45);
+  w.addStruct('lantern', 45, 38);
+  w.addStruct('lantern', 49, 41);
+  w.users = 40;
+  const run = (s) => { for (let i = 0; i < s / DT; i++) { w.step(DT); for (const g of S('generator')) g.fuel = 200; room.snapshot(false); } };
+  return { room, w, p, S, run, gw: S('gateway')[0], app: S('app')[0], db: S('db')[0] };
+}
+
+run('new component links follow the architecture rules', () => {
+  assert.ok(canLink('gateway', 's3') && canLink('cdn', 's3') && canLink('db', 's3'));
+  assert.ok(canLink('gateway', 'k8s') && canLink('cdn', 'k8s') && canLink('k8s', 'app'));
+  assert.equal(canLink('s3', 'app'), false);
+  assert.equal(canLink('app', 'k8s'), false);
+});
+
+run('S3 serves the static class instead of the App, and the gateway falls back when S3 dies', () => {
+  const { w, S, run, gw, app } = rig();
+  const s3 = w.addStruct('s3', 46, 44);
+  gw.links = [s3.id, app.id];
+  run(10);
+  assert.ok(w.flow.ctx.get(s3.id).in[0] > 0, 'S3 receives static traffic');
+  assert.equal(w.flow.ctx.get(app.id).in[0], 0, 'App receives no static traffic');
+  w.crash(s3, 'zap'); run(6);
+  assert.ok(w.flow.ctx.get(app.id).in[0] > 0, 'static falls back to the App after the health check');
+});
+
+run('DB linked to S3 takes periodic backups; without S3 there are none', () => {
+  const { w, run, db } = rig();
+  run(40);
+  assert.equal(db._st.lastBackup, -1, 'no backup target, no backup');
+  const unbacked = db._st.sinceBackup;
+  assert.ok(unbacked > 0, 'writes accumulate un-backed-up');
+  const s3 = w.addStruct('s3', 46, 44);
+  db.links = [s3.id];
+  run(35);
+  assert.ok(db._st.lastBackup > 0, 'snapshot taken');
+  assert.ok(db._st.sinceBackup < unbacked, 'un-backed-up window reset by the snapshot');
+});
+
+run('Module Docker containerizes an App and halves its reboot time', () => {
+  const { w, p, app } = rig();
+  p.x = app.x; p.y = app.y;
+  w.give(p, 'docker_module', 1);
+  w.c_install(p, { id: app.id });
+  assert.equal(app.cont, true);
+  assert.equal(w.invCount(p.inv, 'docker_module'), 0, 'module consumed');
+  app.rb = false;
+  w.startReboot(app, 10);
+  assert.equal(Math.round(app._rbAt - w.time), 5);
+});
+
+run('Kubernetes restarts a crashed containerized App but not a plain one', () => {
+  const { w, S, run, gw, app } = rig();
+  const app2 = w.addStruct('app', 45, 41);
+  app2.links = [...app.links];
+  const k8s = w.addStruct('k8s', 41, 43);
+  k8s.links = [app.id, app2.id];
+  gw.links = [k8s.id];
+  app.cont = true;
+  run(10);
+  w.crash(app, 'zap'); w.crash(app2, 'zap');
+  run(4);
+  assert.equal(app.crashed, true, 'not healed before the restart delay');
+  run(8);
+  assert.equal(app.crashed, false, 'containerized App healed');
+  assert.equal(w.flow.up(app), true, 'and serving again');
+  assert.equal(app2.crashed, true, 'plain App is not managed');
+  assert.ok(S('k8s')[0]._st.heals >= 1);
+});
+
+run('Kubernetes rolls back a bad deploy of a containerized App after the readiness probe fails', () => {
+  const { w, run, gw, app } = rig();
+  const k8s = w.addStruct('k8s', 41, 43);
+  k8s.links = [app.id];
+  gw.links = [k8s.id];
+  app.cont = true; app.ver = 2;
+  run(5);
+  app.bad = true;
+  run(6);
+  assert.equal(app.bad, true, 'still bad before the probe window ends');
+  run(8);
+  assert.equal(app.bad, false, 'rolled back');
+  assert.equal(app.ver, 1);
+});
+
+// ---------- Backup: cfg.backup và cáp S3 cùng tồn tại ----------
+function s3Db(backup) {
+  const t = dbWorld({ backup });
+  const s3 = t.w.addStruct('s3', 46, 44);
+  t.db.links = [s3.id];
+  return t;
+}
+
+run('an S3 snapshot is a restore point even with Backup off: the card shows its age and restore works', () => {
+  const t = s3Db('off');
+  t.run(40);
+  assert.equal(typeof t.m().snapAge, 'number', 'snapshot age shown');
+  assert.ok(t.m().snapAge <= 30);
+  t.w.director.create('dataloss', {});
+  t.run(8);
+  assert.deepEqual(t.active(), ['dataloss']);
+  const atRisk = t.m().rpo, lostBefore = t.w.director.lostTotal;
+  t.w.c_restore(t.p, { id: t.db.id });
+  t.run(1);
+  assert.deepEqual(t.active(), [], 'restore ended the incident');
+  const lost = t.w.director.lostTotal - lostBefore;
+  assert.ok(lost > 0 && Math.abs(lost - atRisk) <= 1, `lost ${lost}, at risk ${atRisk}`);
+  const pm = t.w.log.at(-1);
+  assert.ok(pm.checks.find((c) => c.t === 'Backup bật trước sự cố').ok, 'post-mortem credits the S3 backup');
+});
+
+run('turning Backup off keeps the S3 snapshot, while a DB with neither has none', () => {
+  const t = s3Db('hourly');
+  t.run(40);
+  t.w.c_config(t.p, { id: t.db.id, key: 'backup', val: 'off' });
+  t.run(2);
+  assert.equal(typeof t.m().snapAge, 'number', 'S3 snapshot survives');
+  assert.ok(t.m().rpo < 120);
+  const bare = dbWorld();
+  bare.run(40);
+  assert.equal(bare.m().snapAge, null);
+});
+
+run('S3 does not snapshot corrupt data, so the last clean snapshot stays the restore point', () => {
+  const t = s3Db('off');
+  t.run(40);
+  t.w.director.create('dataloss', {});
+  t.run(2);
+  const at = t.db._st.lastBackup;
+  t.run(40);
+  assert.equal(t.db._st.lastBackup, at);
+});

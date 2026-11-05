@@ -26,9 +26,12 @@ export function archFacts(w) {
     jitter: caches.length > 0 && caches.every((c) => c.cfg.jitter), coalesce: caches.some((c) => c.cfg.coalesce),
     shards: Math.max(1, ...dbs.map((d) => d.shards)), salt: dbs.some((d) => d.cfg.salt), retention: dbs.some((d) => d.cfg.retention),
     failover: dbs[0] ? dbs[0].cfg.failover : 'off', repl: dbs[0] ? dbs[0].cfg.repl : 'async',
-    backup: dbs.some((d) => d.cfg.backup !== 'off'), backupMode: dbs[0] ? dbs[0].cfg.backup : 'off',
+    backup: dbs.some((d) => d.cfg.backup !== 'off' || (d._st && d._st.backupOn)), backupMode: dbs[0] ? dbs[0].cfg.backup : 'off',
     monitored: comps.length ? mon.length / comps.length : 1, comps: comps.length,
     maxTier: Math.max(1, ...comps.map((c) => c.tier)),
+    s3: of('s3').length, k8s: of('k8s').length, balancers: lbs.length + of('k8s').length,
+    containers: apps.filter((a) => a.cont).length, k8sManaged: apps.filter((a) => w.orchestrator(a)).length,
+    s3Backup: dbs.some((d) => d._st && d._st.backupOn),
   };
 }
 
@@ -58,10 +61,10 @@ export const INCIDENTS = {
     end: (w) => { w.director.mods.demand = 1; },
     visible: () => true,
     diag: (w, inc, f, A) => [
-      { ok: f.appsUp >= 2 && f.lbs > 0, t: 'Scale-out có Load Balancer', d: f.appsUp >= 2 && f.lbs > 0 ? `${f.appsUp} App sau LB chia tải.` : 'Một App đơn lẻ không thể gánh x' + inc.mult.toFixed(1) + ' tải. Thêm App + Load Balancer (horizontal scaling).' },
-      { ok: f.asg, t: 'Autoscaler', d: f.asg ? 'Instance tự thêm khi tải > 70%, nhưng cần ~15s khởi động.' : 'Không có Autoscaler: capacity cố định lúc tải cao nhất. Đánh đổi: autoscale tốn điện/tiền khi chạy.' },
+      { ok: f.appsUp >= 2 && f.balancers > 0, t: 'Scale-out có Load Balancer', d: f.appsUp >= 2 && f.balancers > 0 ? `${f.appsUp} App sau LB/Kubernetes chia tải.` : 'Một App đơn lẻ không thể gánh x' + inc.mult.toFixed(1) + ' tải. Thêm App + Load Balancer (horizontal scaling).' },
+      { ok: f.asg || f.k8sManaged > 0, t: 'Autoscaler', d: f.k8sManaged > 0 ? 'Kubernetes HPA thêm pod khi tải > 70% (khởi động ~8s vì image đã sẵn sàng).' : f.asg ? 'Instance tự thêm khi tải > 70%, nhưng cần ~15s khởi động.' : 'Không có Autoscaler: capacity cố định lúc tải cao nhất. Đánh đổi: autoscale tốn điện/tiền khi chạy.' },
       { ok: f.rl > 0, t: 'Rate limit / load shedding', d: f.rl > 0 ? `Rate limit ${f.rl} req/s bảo vệ backend, đổi lại một phần người dùng bị từ chối sớm.` : 'Không rate limit: quá tải làm MỌI người cùng chậm/lỗi thay vì từ chối có chọn lọc một phần.' },
-      { ok: f.cdns > 0, t: 'CDN hấp thụ traffic tĩnh', d: f.cdns > 0 ? 'CDN giảm ~30% request lên origin.' : '30% traffic là file tĩnh — CDN sẽ gánh gần hết.' },
+      { ok: f.cdns > 0 || f.s3 > 0, t: 'CDN / Object Storage hấp thụ traffic tĩnh', d: f.cdns > 0 ? 'CDN giảm ~30% request lên origin.' : f.s3 > 0 ? 'Object Storage phục vụ lớp tĩnh rẻ hơn App nhiều, nhưng chậm hơn CDN edge.' : '30% traffic là file tĩnh — CDN và Object Storage sẽ gánh gần hết.' },
       { ok: f.queues > 0, t: 'Queue đệm ghi', d: f.queues > 0 ? 'Queue hấp thụ đỉnh ghi, DB xả dần.' : 'Ghi đi thẳng vào DB: đỉnh ghi đè DB ngay.' },
       { ok: A.peakAmp < 1.25, t: 'Retry amplification', d: A.peakAmp < 1.25 ? 'Retry không khuếch đại tải đáng kể.' : `Người dùng thử lại làm tải thực tế cao gấp ${A.peakAmp.toFixed(2)} lần nhu cầu.` },
     ],
@@ -99,7 +102,7 @@ export const INCIDENTS = {
     start(w, inc) {
       if (inc.target) return true; // sinh từ onCrash
       const cands = [...w.structs].filter((s) => COMP[s.k] && s.on && !s.crashed);
-      const wt = { app: 3, db: 2, cache: 2, lb: 1.5, queue: 1, gateway: 0.7, cdn: 1, replica: 1 };
+      const wt = { app: 3, db: 2, cache: 2, lb: 1.5, queue: 1, gateway: 0.7, cdn: 1, replica: 1, s3: 0.6, k8s: 0.8 };
       const t = weightedPick(w.rng, cands, (s) => wt[s.k] || 1);
       if (!t) return false;
       inc.target = t.id;
@@ -119,7 +122,7 @@ export const INCIDENTS = {
     visible: (w, inc) => { const t = w.ents.get(inc.target); return t && w.isMonitored(t.x, t.y); },
     diag(w, inc, f, A) {
       const k = inc.kind;
-      const redund = k === 'app' ? f.appsUp >= 2 && f.lbs > 0 : k === 'db' ? f.replicas > 0 && f.failover !== 'off' : k === 'lb' ? f.lbs >= 2 : k === 'cache' ? true : k === 'queue' ? false : false;
+      const redund = k === 'app' ? (f.appsUp >= 2 && f.balancers > 0) || f.k8sManaged > 0 : k === 'db' ? f.replicas > 0 && f.failover !== 'off' : k === 'lb' ? f.lbs >= 2 : k === 'k8s' ? f.k8s >= 2 : k === 'cache' ? true : k === 'queue' ? false : false;
       const mttr = (inc.fixedAt ?? w.time) - inc.t0;
       const arr = [
         { ok: redund, t: `Dự phòng cho ${STRUCTS[k] ? STRUCTS[k].name : k} (N+1)`, d: redund ? 'Có node thay thế nên hệ thống vẫn phục vụ.' : `${STRUCTS[k] ? STRUCTS[k].name : k} là SPOF: chết là người dùng thấy lỗi ngay. Thêm bản dự phòng.` },
@@ -129,6 +132,10 @@ export const INCIDENTS = {
       if (k === 'db') {
         arr.push({ ok: f.failover !== 'off', t: 'Failover DB', d: f.failover !== 'off' ? `Failover chế độ ${f.failover}.` : 'Failover đang tắt: DB chết là ghi chết cho tới khi reboot.' });
         arr.push({ ok: inc.lost === 0 || inc.lost === undefined, t: 'Mất dữ liệu (RPO)', d: inc.lost ? `Mất ~${inc.lost} bản ghi vì replication bất đồng bộ. Dùng sync replication nếu RPO=0.` : 'Không mất bản ghi nào.' });
+        arr.push({ ok: f.backup, t: 'Backup ngoài node', d: f.backup ? 'DB có backup định kỳ (Backup hoặc Object Storage): dữ liệu mất tối đa bằng khoảng giữa hai snapshot.' : 'Không có backup ngoài node: replica sao chép cả lỗi lẫn thao tác xoá nhầm, nó không thay được backup. Bật Backup ở DB hoặc nối DB tới Object Storage.' });
+      }
+      if (k === 'app' && f.containers > 0) {
+        arr.push({ ok: f.k8sManaged > 0, t: 'Tự chữa (Kubernetes)', d: f.k8sManaged > 0 ? 'Kubernetes dựng lại pod chết sau ~6s mà không cần kỹ sư.' : 'Container khởi động nhanh nhưng không ai tự khởi động lại nó. Orchestrator (Kubernetes) tự chữa theo trạng thái mong muốn.' });
       }
       if (inc.cause === 'gremlin') arr.push({ ok: false, t: 'Gremlin gặm công trình', d: 'Bug chỉ tấn công những gì nằm ngoài vùng sáng giám sát. Mở rộng vùng phủ Đèn giám sát.' });
       return arr;
@@ -163,7 +170,8 @@ export const INCIDENTS = {
       return [
         { ok: inc.wasMonitored, t: 'Giám sát bộ nhớ', d: inc.wasMonitored ? 'Bạn thấy mem tăng đều trên dashboard.' : 'Mem tăng trong im lặng cho tới khi OOM. Chỉ metric mới lộ ra xu hướng này.' },
         { ok: !inc.oom, t: 'Xử lý trước khi OOM', d: inc.oom ? 'App bị OOM-kill giữa lúc đang phục vụ.' : `Restart sớm sau ${Math.round(dur)}s, trước khi sập.` },
-        { ok: f.appsUp >= 2 && f.lbs > 0, t: 'Rolling restart không downtime', d: f.appsUp >= 2 && f.lbs > 0 ? 'Có nhiều App sau LB: restart từng node không gây downtime.' : 'Chỉ một App: restart = downtime. Cần ≥2 App sau LB.' },
+        { ok: f.appsUp >= 2 && f.balancers > 0, t: 'Rolling restart không downtime', d: f.appsUp >= 2 && f.balancers > 0 ? 'Có nhiều App sau LB/Kubernetes: restart từng node không gây downtime.' : 'Chỉ một App: restart = downtime. Cần ≥2 App sau LB.' },
+        { ok: f.k8sManaged > 0, t: 'Tự chữa OOM (Kubernetes)', d: f.k8sManaged > 0 ? 'Pod bị OOM-kill được Kubernetes dựng lại tự động sau ~6s.' : 'Không có orchestrator: OOM-kill = node chết tới khi có người reboot.' },
       ];
     },
     concepts: ['concept-observability', 'concept-scaling'],
@@ -300,6 +308,7 @@ export const INCIDENTS = {
       { ok: inc.wasMonitored, t: 'Cảnh báo dung lượng', d: inc.wasMonitored ? 'Đĩa lên tới ' + pct(A.peakDisk) + ' và bạn thấy nó.' : 'Đĩa đầy là sự cố "dễ dự đoán nhất" — chỉ cần giám sát.' },
       { ok: !A.diskFull, t: 'Không chạm 100%', d: A.diskFull ? 'Đĩa chạm 100%: mọi ghi thất bại.' : 'Xử lý trước khi chạm 100%.' },
       { ok: f.queues > 0, t: 'Queue đệm ghi khi DB tạm lỗi', d: f.queues > 0 ? 'Queue giữ ghi trong khi bạn dọn đĩa.' : 'Không queue: ghi thất bại là mất ngay.' },
+      { ok: f.s3Backup, t: 'Offload dữ liệu lạnh sang Object Storage', d: f.s3Backup ? 'DB nối S3: dữ liệu lạnh/backup đẩy ra ngoài, đĩa đầy chậm hơn ~25%.' : 'Mọi dữ liệu nằm trên đĩa DB. Đẩy dữ liệu lạnh/backup sang Object Storage (rẻ hơn nhiều).' },
     ],
     concepts: ['concept-capacity-cost', 'concept-observability'],
     lesson: 'Tài nguyên hữu hạn nào rồi cũng đầy. Giám sát dung lượng + vòng đời dữ liệu (retention/archive) là việc của thiết kế, không phải của chữa cháy.',
@@ -316,7 +325,9 @@ export const INCIDENTS = {
     diag(w, inc, f, A) {
       const t = (inc.fixedAt ?? w.time) - inc.t0;
       return [
-        { ok: f.appsUp >= 2 && f.lbs > 0, t: 'Canary / rolling', d: f.appsUp >= 2 && f.lbs > 0 ? 'Bạn deploy từng node nên chỉ một phần traffic dính lỗi (blast radius nhỏ).' : 'Chỉ có một App: deploy lỗi = 100% traffic dính lỗi. Có ≥2 App sau LB cho phép canary.' },
+        { ok: f.appsUp >= 2 && f.balancers > 0, t: 'Canary / rolling', d: f.appsUp >= 2 && f.balancers > 0 ? 'Bạn deploy từng node nên chỉ một phần traffic dính lỗi (blast radius nhỏ).' : 'Chỉ có một App: deploy lỗi = 100% traffic dính lỗi. Có ≥2 App sau LB cho phép canary.' },
+        { ok: f.containers > 0, t: 'Image bất biến (container)', d: f.containers > 0 ? 'Container đóng gói cả môi trường chạy, giảm hẳn lỗi "chạy được trên máy tôi" (rủi ro deploy lỗi 30% → 12%).' : 'App chạy trực tiếp trên host: môi trường lệch giữa các lần deploy. Đóng gói bằng Module Docker.' },
+        { ok: f.k8sManaged > 0, t: 'Readiness probe + rollback tự động', d: f.k8sManaged > 0 ? 'Kubernetes thấy readiness thất bại và tự rollback sau ~10s; deploy là rolling update.' : 'Không có orchestrator: phải có người thấy lỗi và bấm Rollback.' },
         { ok: inc.wasMonitored, t: 'Giám sát sau deploy', d: inc.wasMonitored ? 'Bạn thấy error rate của node tăng.' : 'Không giám sát node này: lỗi chỉ lộ qua khiếu nại khách hàng.' },
         { ok: t < 30, t: `Thời gian rollback ${Math.round(t)}s`, d: t < 30 ? 'Rollback nhanh.' : 'Rollback chậm — nút Rollback luôn nên là thao tác một chạm.' },
       ];
@@ -397,7 +408,8 @@ export const INCIDENTS = {
       inc.target = db.id;
       inc.kind = 'db';
       inc.backup = db.cfg.backup;
-      inc.snapAge = w.flow.hasSnapshot(db) ? Math.round(w.time - st.lastBackupAt) : null;
+      inc.s3 = !!st.backupOn;
+      inc.snapAge = w.flow.hasSnapshot(db) ? Math.round(w.time - w.flow.snapshotAt(db)) : null;
       if (w.isMonitored(db.x, db.y)) w.say('Ai đó vừa chạy DROP TABLE nhầm trên production! Dữ liệu hỏng đã được sao chép sang cả replica.', 'bad');
       return true;
     },
@@ -406,18 +418,18 @@ export const INCIDENTS = {
     visible: (w, inc) => { const t = w.ents.get(inc.target); return t && w.isMonitored(t.x, t.y); },
     diag(w, inc, f, A) {
       const b = BACKUP[inc.backup];
-      const on = inc.backup !== 'off';
+      const on = inc.backup !== 'off' || inc.s3;
       const fresh = inc.snapAge !== null && inc.snapAge <= BACKUP.hourly.every;
       const rto = Math.round((inc.restoredAt ?? inc.fixedAt ?? w.time) - inc.t0);
       const restored = inc.restoredAt !== undefined && !inc.rebuilt;
       const arr = [
-        { ok: on, t: 'Backup bật trước sự cố', d: on ? `Backup ${b.name.toLowerCase()} (snapshot mỗi ${b.every}s).` : 'Backup đang tắt: không có điểm nào để quay về. Phải bật Backup ở DB TRƯỚC khi sự cố xảy ra.' },
+        { ok: on, t: 'Backup bật trước sự cố', d: inc.backup !== 'off' ? `Backup ${b.name.toLowerCase()} (snapshot mỗi ${b.every}s).` : inc.s3 ? 'DB nối Object Storage: snapshot sang S3 mỗi 30s.' : 'Backup đang tắt: không có điểm nào để quay về. Phải bật Backup ở DB TRƯỚC khi sự cố xảy ra.' },
         { ok: fresh, t: 'Snapshot đủ mới (RPO)', d: inc.snapAge === null ? 'Lúc sự cố chưa có snapshot nào: mọi ghi từ trước tới giờ đều không được bảo vệ.' : fresh ? `Snapshot cuối cách sự cố ${inc.snapAge}s: chỉ mất các ghi rất gần đây.` : `Snapshot cuối đã cũ ${inc.snapAge}s: mọi ghi từ đó tới lúc khôi phục đều mất. Rút ngắn chu kỳ backup (đổi lại tốn đĩa và IO).` },
         { ok: restored && rto <= 45, t: `Khôi phục (RTO ${rto}s)`, d: restored ? (rto <= 45 ? `Khôi phục từ snapshot sau ${rto}s, mất ~${inc.lost} bản ghi.` : `Khôi phục sau ${rto}s là chậm: lỗi người dùng kéo dài và mất thêm bản ghi trong lúc chờ.`) : inc.rebuilt ? `Không có snapshot để khôi phục: sau ${rto}s cả đội phải dựng lại dữ liệu từ đầu, mất ~${inc.lost} bản ghi.` : 'DB không còn nữa nên không khôi phục được.' },
       ];
       if (f.replicas > 0) arr.push({ ok: on, t: 'Replica không phải backup', d: on ? 'Có replica nhưng bạn không dựa vào nó: lỗi xoá nhầm đã được sao chép sang mọi replica ngay, chính snapshot mới cứu được dữ liệu.' : `Có ${f.replicas} replica nhưng không có backup: lỗi xoá nhầm bị sao chép sang mọi replica ngay lập tức, failover không giúp gì.` });
       arr.push({ ok: inc.wasMonitored, t: 'Giám sát phát hiện', d: inc.wasMonitored ? 'Bạn thấy DB báo dữ liệu hỏng và lỗi tăng ngay.' : 'DB nằm ngoài vùng giám sát: dữ liệu hỏng trong im lặng cho tới khi khách hàng phàn nàn.' });
-      if (on) arr.push({ ok: A.peakDisk < 0.85, t: 'Chi phí đĩa của backup', d: A.peakDisk < 0.85 ? `Mỗi snapshot chiếm ~${(b.disk * 100).toFixed(1)}% đĩa (DB tier 1), đĩa đỉnh ${pct(A.peakDisk)}: chi phí chấp nhận được.` : `Đĩa đỉnh ${pct(A.peakDisk)}: snapshot ăn dần dung lượng. Bật Retention hoặc giãn chu kỳ backup.` });
+      if (inc.backup !== 'off') arr.push({ ok: A.peakDisk < 0.85, t: 'Chi phí đĩa của backup', d: A.peakDisk < 0.85 ? `Mỗi snapshot chiếm ~${(b.disk * 100).toFixed(1)}% đĩa (DB tier 1), đĩa đỉnh ${pct(A.peakDisk)}: chi phí chấp nhận được.` : `Đĩa đỉnh ${pct(A.peakDisk)}: snapshot ăn dần dung lượng. Bật Retention hoặc giãn chu kỳ backup.` });
       return arr;
     },
     concepts: ['concept-backup', 'concept-durability'],
