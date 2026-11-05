@@ -1,19 +1,39 @@
 // Hai transport cho cùng một giao thức: WebSocket (co-op) và Web Worker (solo).
 export class WsNet {
-  constructor(room, onMsg, onClose) {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.ws = new WebSocket(`${proto}://${location.host}/ws?room=${encodeURIComponent(room)}`);
-    this.q = [];
-    this.ws.onopen = () => { this.open = true; for (const s of this.q) this.ws.send(s); this.q = []; };
-    this.ws.onmessage = (ev) => onMsg(JSON.parse(ev.data));
-    this.ws.onclose = () => onClose && onClose();
-    this.ws.onerror = () => {};
+  constructor(room, onMsg, onClose, join, onRetry) {
+    this.url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?room=${encodeURIComponent(room)}`;
+    this.onMsg = onMsg; this.onClose = onClose; this.join = join; this.onRetry = onRetry;
+    this.tries = 0;
+    this.closed = false;
+    this.connect();
+  }
+  connect() {
+    const ws = this.ws = new WebSocket(this.url);
+    this.open = false;
+    ws.onopen = () => {
+      this.open = true; this.tries = 0;
+      ws.send(JSON.stringify(this.join));
+    };
+    ws.onmessage = (ev) => {
+      if (this.closed || ws !== this.ws) return;
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      this.onMsg(m);
+    };
+    ws.onclose = () => {
+      if (this.closed || ws !== this.ws) return;
+      this.open = false;
+      if (this.tries >= 6) { this.onClose && this.onClose(); return; }
+      const delay = Math.min(8000, 500 * 2 ** this.tries++);
+      this.onRetry && this.onRetry(this.tries);
+      this.timer = setTimeout(() => { if (!this.closed) this.connect(); }, delay);
+    };
+    ws.onerror = () => {};
   }
   send(obj) {
-    const s = JSON.stringify(obj);
-    if (this.open) this.ws.send(s); else this.q.push(s);
+    if (this.open) this.ws.send(JSON.stringify(obj));
   }
-  close() { this.ws.close(); }
+  close() { this.closed = true; clearTimeout(this.timer); this.ws.close(); }
 }
 
 export class LocalNet {

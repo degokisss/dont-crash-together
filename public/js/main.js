@@ -57,14 +57,13 @@ function start(mode, cont = false) {
   } else {
     const room = ($('#room').value || 'main').trim();
     localStorage.setItem('dct.room', room);
-    G.net = new WsNet(room, onMsg, () => { if (running) HUD.disconnected(); });
-    G.net.send({ t: 'join', name, token, role: G.role });
+    G.net = new WsNet(room, onMsg, () => { if (running) HUD.disconnected(); }, { t: 'join', name, token, role: G.role }, () => { if (running) HUD.toast('Mất kết nối, đang kết nối lại…', 'warn'); });
   }
   if (!running) { running = true; requestAnimationFrame(loop); }
 }
 
 export function quitToMenu() {
-  if (G.net) { if (G.solo) G.net.close(); else G.net.close(); }
+  if (G.net) G.net.close();
   G.net = null;
   running = false;
   G.ents.clear();
@@ -92,7 +91,7 @@ function onMsg(m) {
       G.kp = m.kp || 0; G.learned = new Set(m.learned || []); G.trace = null;
       G.log = m.log || []; G.history = m.history || [];
       G.users = m.users; G.over = m.over; G.sys = m.sys || null; G.selected = null; G.mode = 'none';
-      G.cam = null;
+      G.cam = null; G.fx.length = 0; G.incidents.clear(); G._maxFuel = 0;
       HUD.onWelcome();
       Inspector.close();
       break;
