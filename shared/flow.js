@@ -1,6 +1,6 @@
 // Mô phỏng luồng request qua đồ thị component (chạy mỗi 0.5 giây).
 // Mô hình: lưu lượng fluid + hàng đợi M/M/1 đơn giản + retry + circuit breaker + replication + quorum.
-import { COMP, COST, CLS, TRAFFIC_MIX, RPS_PER_USER, SLO, STRUCTS, BACKUP, DATALOSS } from './data.js';
+import { COMP, COST, CLS, TRAFFIC_MIX, RPS_PER_USER, SLO, STRUCTS, BACKUP, DATALOSS, DEPLOY, BAD_FAIL } from './data.js';
 import { clamp, dist } from './util.js';
 
 const CLIENT_TIMEOUT_MS = 3000;
@@ -90,6 +90,9 @@ export class Flow {
   }
 
   skewDb(db) { return clamp((db.cfg.salt ? 0.06 : 0.12) + this.mods.skewDb, 0, 0.95); }
+
+  // Phần request của App đang chạy bản lỗi: 100% sau deploy thẳng / khi bản mới đã lên 100%, chỉ `share` trong cửa sổ canary.
+  badFrac(n) { return n.bad ? (n.rollout ? n.rollout.share : 1) : 0; }
 
   capOf(n) {
     const C = COMP[n.k];
@@ -239,7 +242,8 @@ export class Flow {
     const base = C.base[Math.min(n.tier, C.base.length) - 1];
     let lat = base / (1 - Math.min(rho, 0.95)) + (st.backlog / cap) * 1000;
     if (n.k === 'app') {
-      if (n.bad) ok *= 0.6;
+      const bad = this.badFrac(n);
+      if (bad) ok *= 1 - BAD_FAIL * bad;
       if (st.mem > 85) lat *= 1.5;
     }
     if (n.k === 'db' && st.rebalUntil > this.w.time) lat *= 1.3;
@@ -352,6 +356,7 @@ export class Flow {
           if (now - st.badAt[a.id] >= K8S_ROLLBACK_DELAY) {
             delete st.badAt[a.id];
             a.bad = false;
+            a.rollout = null;
             a.ver = Math.max(1, a.ver - 1);
             w.startReboot(a, 1);
             st.rollbacks = (st.rollbacks || 0) + 1;
@@ -740,7 +745,10 @@ export class Flow {
       if (!vis) continue;
       const m = { u: round(c.util, 2), rps: Math.round(c.in[0] + c.in[1] + c.in[2] + c.in[3]), lat: Math.round(c.lat), err: round(1 - (c.up ? c.okSelf : 0), 3), up: c.up ? 1 : 0 };
       switch (n.k) {
-        case 'app': m.mem = Math.round(st.mem); m.pf = round(st.pf, 2); m.br = st.brState; m.amp = round(st.amp || 1, 2); break;
+        case 'app':
+          m.mem = Math.round(st.mem); m.pf = round(st.pf, 2); m.br = st.brState; m.amp = round(st.amp || 1, 2);
+          if (n.rollout) m.ro = { ph: n.rollout.phase, left: Math.max(0, Math.round(n.rollout.until - w.time)), share: n.rollout.share, err: n.bad ? BAD_FAIL : 0 };
+          break;
         case 'cache': m.hit = round(st.hit || 0, 2); m.warm = round(st.warm, 2); if (st.crushed) m.crush = 1; break;
         case 'cdn': m.hit = round(st.hit || 0, 2); break;
         case 'queue': m.q = Math.round(st.q); m.lag = round(st.lag, 1); m.full = round(st.fullness || 0, 2); break;
@@ -801,7 +809,7 @@ export class Flow {
       if (own) {
         ms += c.lat * (0.6 + 0.8 * rng());
         if (rng() > c.okSelf) {
-          if (n.k === 'app' && n.bad && c.util <= 1) return fail(c, 'bad', 'drop', 'bản deploy lỗi trả 500');
+          if (n.k === 'app' && this.badFrac(n) > 0 && c.util <= 1) return fail(c, 'bad', 'drop', n.rollout ? `bản mới (${DEPLOY[n.rollout.phase].name}) lỗi trả 500` : 'bản deploy lỗi trả 500');
           return fail(c, 'overload', 'drop', c.util > 1 ? `quá tải (${Math.round(c.util * 100)}%) — hàng đợi đầy, trả 503` : 'lỗi/timeout cục bộ');
         }
       }

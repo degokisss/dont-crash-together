@@ -2,7 +2,7 @@
 // Chạy giống hệt nhau trong Node (co-op) và Web Worker (solo). Không có DOM, không có I/O.
 import {
   TILE, MAP_W, MAP_H, DT, FLOW_DT, INV_SLOTS, REACH, BUILD_RANGE, STATION_R, HANDS_ON_R, PWR_R,
-  ITEMS, STRUCTS, COMP, RECIPES, COOK, RESOURCES, MOBS, PLAYER, MAX_SHARDS, DAY_LEN, BACKUP, DATALOSS,
+  ITEMS, STRUCTS, COMP, RECIPES, COOK, RESOURCES, MOBS, PLAYER, MAX_SHARDS, DAY_LEN, BACKUP, DATALOSS, DEPLOY, DEPLOY_CHOICES,
   clockAt, SEASON_VI, canLink, ROLES, CLS, KP_START, KP_PER_CODEX, ALERT,
 } from './data.js';
 import { mulberry32, clamp, dist, round1 } from './util.js';
@@ -127,7 +127,7 @@ export class World {
       case 'generator': e.fuel = 0; e.mf = 200; break;
       case 'gateway': e.waf = false; e.cfg = { rl: 0 }; break;
       case 'lb': e.asg = false; e.cfg = { algo: 'rr' }; break;
-      case 'app': e.ver = 1; e.bad = false; e.virt = 0; e.cont = false; e.cfg = { retries: 1, backoff: false, breaker: false }; break;
+      case 'app': e.ver = 1; e.bad = false; e.virt = 0; e.cont = false; e.rollout = null; e.cfg = { retries: 1, backoff: false, breaker: false, deploy: 'direct' }; break;
       case 'cache': e.cfg = { ttl: 30, jitter: false, coalesce: false }; break;
       case 'db': e.shards = 1; e.leader = true; e.cfg = { repl: 'async', failover: 'off', retention: false, salt: false, backup: 'off' }; break;
       case 'lantern': e.cfg = { alert: 'normal' }; break;
@@ -655,7 +655,7 @@ export class World {
     const V = {
       gateway: { rl: [0, 60, 120, 250, 500, 1000] },
       lb: { algo: ['rr', 'lc', 'hash'] },
-      app: { retries: [0, 1, 2, 3], backoff: [true, false], breaker: [true, false] },
+      app: { retries: [0, 1, 2, 3], backoff: [true, false], breaker: [true, false], deploy: DEPLOY_CHOICES },
       cache: { ttl: [10, 30, 60], jitter: [true, false], coalesce: [true, false] },
       db: { repl: ['async', 'sync'], failover: ['off', 'auto', 'quorum'], retention: [true, false], salt: [true, false], backup: Object.keys(BACKUP) },
       lantern: { alert: Object.keys(ALERT) },
@@ -663,28 +663,60 @@ export class World {
     const allowed = V[e.k] && V[e.k][m.key];
     if (!allowed || !allowed.includes(m.val)) return;
     e.cfg[m.key] = m.val;
-    const CU = { algo: 'concept-lb-algos', ttl: 'concept-cache-ttl', jitter: 'concept-cache-ttl', coalesce: 'concept-cold-start', repl: 'concept-replication', failover: 'concept-cap', retention: 'concept-capacity-cost', salt: 'concept-sharding', backup: 'concept-backup', alert: 'concept-alerting', retries: 'concept-retry-storm', backoff: 'concept-retry-storm', breaker: 'concept-circuit-breaker', rl: 'concept-load-shedding' };
+    const CU = { algo: 'concept-lb-algos', ttl: 'concept-cache-ttl', jitter: 'concept-cache-ttl', coalesce: 'concept-cold-start', repl: 'concept-replication', failover: 'concept-cap', retention: 'concept-capacity-cost', salt: 'concept-sharding', backup: 'concept-backup', alert: 'concept-alerting', retries: 'concept-retry-storm', backoff: 'concept-retry-storm', breaker: 'concept-circuit-breaker', rl: 'concept-load-shedding', deploy: 'concept-deploy-strategies' };
     if (CU[m.key]) this.unlock(CU[m.key]);
     this.flow.dirty = true;
+  }
+
+  // Chiến lược deploy của App: Kubernetes rolling update (App container hoá sau k8s) thay mọi cấu hình, nếu không thì theo cfg.deploy.
+  deployMode(e) { return this.orchestrator(e) ? 'k8s' : e.cfg.deploy; }
+
+  // Ghi chú ngắn về cửa sổ quan sát của lần deploy vừa rồi (rỗng nếu bản mới nhận 100% ngay).
+  rolloutNote(e) {
+    const r = e.rollout;
+    return r ? ` (${DEPLOY[r.phase].name}: ${Math.round(r.share * 100)}% traffic chạy bản mới, quan sát ${DEPLOY[r.phase].window}s)` : '';
+  }
+
+  // Máy trạng thái rollout của App: null -> canary | bluegreen -> null. Vào: deploy (hoặc game day). Ra: hết cửa sổ (bản mới tự lên 100%),
+  // c_promote (lên 100% sớm) hoặc c_rollback. `bad` vẫn là cờ "phiên bản đang chạy bị lỗi"; phần traffic dính lỗi lấy từ rollout.share (Flow.badFrac).
+  openRollout(e) {
+    const D = DEPLOY[this.deployMode(e)];
+    e.rollout = D.window ? { phase: this.deployMode(e), until: this.time + D.window, share: D.share } : null;
+  }
+
+  closeRollout(e, how) {
+    const r = e.rollout;
+    if (!r) return;
+    e.rollout = null;
+    this.director.onPromote(e, r, how);
+    const name = DEPLOY[r.phase].name;
+    if (!this.isMonitored(e.x, e.y)) this.say(`${name} của App #${e.id} đã lên 100% (${how === 'auto' ? 'hết cửa sổ quan sát' : 'promote thủ công'}).`, 'info');
+    else if (e.bad) this.say(`${name} lên 100%: bản lỗi bây giờ phục vụ mọi request của App #${e.id}!`, 'bad');
+    else this.say(`${name} lên 100%: v${e.ver} chạy ổn, phát hành hoàn tất.`, 'good');
   }
 
   c_deploy(p, m) {
     const e = this.struct(m.id, ['app']);
     if (!e || !this.near(p, e)) return this.say('Lại gần hơn để deploy.', 'warn', p.pid);
     if (e.rb) return;
+    const mode = this.deployMode(e);
+    const D = DEPLOY[mode];
+    if (!this.canAfford(p.inv, D.cost)) return this.say(`${D.name} cần ${Object.entries(D.cost).map(([k, n]) => `${n} ${ITEMS[k].name}`).join(', ')} mỗi lần deploy.`, 'warn', p.pid);
+    for (const k in D.cost) this.invRemove(p.inv, k, D.cost[k]);
     e.ver++;
     e._prevBad = e.bad;
-    const orch = this.orchestrator(e);
-    this.startReboot(e, orch ? 1 : 5); // rolling update: pod mới lên trước khi pod cũ tắt
+    if (D.reboot) this.startReboot(e, D.reboot); // rolling update: pod mới lên trước khi pod cũ tắt
     const badRate = e.cont ? (p.role === 'backend' ? 0.05 : 0.12) : (p.role === 'backend' ? 0.12 : 0.3); // image bất biến → ít "chạy được trên máy tôi"
     const bad = this.rng() < badRate;
     e.bad = bad;
     e._deployAt = this.time;
+    this.openRollout(e);
     this.unlock('concept-blast-radius');
+    if (mode === 'canary' || mode === 'bluegreen') this.unlock('concept-deploy-strategies');
     if (bad) {
       this.director.onBadDeploy(e);
     } else {
-      this.say(`Deploy v${e.ver} lên ${STRUCTS[e.k].name} thành công.`, 'good', p.pid);
+      this.say(`Deploy v${e.ver} lên ${STRUCTS[e.k].name} thành công${this.rolloutNote(e)}.`, 'good', p.pid);
       if (e._st) e._st.leak = false; // bản vá
       if (this.time - this.growthBoostAt > 60) {
         this.growthBoostAt = this.time;
@@ -698,11 +730,23 @@ export class World {
     const e = this.struct(m.id, ['app']);
     if (!e || !this.near(p, e)) return this.say('Lại gần hơn để rollback.', 'warn', p.pid);
     if (!e.bad && e.ver <= 1) return;
+    const r = e.rollout;
+    e.rollout = null;
     e.bad = false;
     e.ver = Math.max(1, e.ver - 1);
-    this.startReboot(e, p.role === 'backend' ? 1 : 4);
-    this.say(`Rollback ${STRUCTS[e.k].name} về v${e.ver}.`, 'good');
-    this.director.onRollback(e);
+    let secs = (r ? DEPLOY[r.phase] : DEPLOY.direct).rollback; // bản cũ còn chạy song song trong cửa sổ nên chỉ cần chuyển traffic lại
+    if (p.role === 'backend') secs = Math.min(secs, 1);
+    if (secs > 0) this.startReboot(e, secs);
+    this.say(`Rollback ${STRUCTS[e.k].name} về v${e.ver}${r && secs === 0 ? ' (chuyển traffic về bản cũ, không reboot)' : ''}.`, 'good');
+    this.director.onRollback(e, r);
+  }
+
+  // Đẩy bản mới lên 100% ngay, không chờ hết cửa sổ quan sát (nếu đó là bản lỗi thì lỗi lan ra toàn bộ node).
+  c_promote(p, m) {
+    const e = this.struct(m.id, ['app']);
+    if (!e || !this.near(p, e)) return this.say('Lại gần hơn để promote.', 'warn', p.pid);
+    if (!e.rollout) return this.say('App này không có bản canary / blue-green nào đang chờ promote.', 'warn', p.pid);
+    this.closeRollout(e, 'manual');
   }
 
   c_archive(p, m) {
@@ -1026,7 +1070,7 @@ export class World {
 
   compWatts(e) {
     const C = COMP[e.k];
-    if (C) return C.watts[Math.min(e.tier, C.watts.length) - 1] + (e.virt || 0) * (COMP.app.watts[0]);
+    if (C) return C.watts[Math.min(e.tier, C.watts.length) - 1] * (1 + (e.rollout ? DEPLOY[e.rollout.phase].watts : 0)) + (e.virt || 0) * (COMP.app.watts[0]); // hai phiên bản cùng chạy = tốn điện hơn
     return STRUCTS[e.k].watts || 0;
   }
 
@@ -1083,6 +1127,7 @@ export class World {
       if (s.shards > 1) cx += (s.shards - 1) * 2;
       if (s.asg) cx += 2;
       if (s.cont) cx += 1;
+      if (s.rollout) cx += DEPLOY[s.rollout.phase].cx;
       if (s.waf) cx += 1;
       if (s.virt) cx += s.virt * 0.3;
       if (s.tier > 1) cx += (s.tier - 1) * 0.5;
@@ -1092,6 +1137,7 @@ export class World {
     // ---- timer của công trình ----
     for (const s of this.structs) {
       if (s.rb && this.time >= s._rbAt) { s.rb = false; this.fx('heal', s.x, s.y); }
+      if (s.rollout && this.time >= s.rollout.until) this.closeRollout(s, 'auto');
       if (s.k === 'stove' && s.cooking && !s.done && this.time >= s._doneAt) { s.done = true; this.fx('heal', s.x, s.y); }
       if (s.k === 'turret') this.stepTurret(s, dt);
       if (s.on && !s.crashed && s.hp < s.mhp && this.isLit(s.x, s.y)) s.hp = Math.min(s.mhp, Math.round((s.hp + 1.5 * dt) * 10) / 10);
@@ -1202,6 +1248,7 @@ export class World {
       if (e.k === 'bot') continue; // bot DDoS thuộc về sự cố đang chạy, sự cố không được lưu
       e._cls = RESOURCES[e.k] ? 'res' : STRUCTS[e.k] ? 'struct' : MOBS[e.k] ? 'mob' : e.k;
       if (e.k === 'db' && e.cfg.backup === undefined) e.cfg.backup = 'off'; // bản lưu cũ chưa có backup
+      if (e.k === 'app') { e.cfg.deploy ??= 'direct'; e.rollout = e.rollout && DEPLOY[e.rollout.phase] ? e.rollout : null; } // bản lưu cũ chưa có chiến lược deploy
       if (e.k === 'lantern' && !e.cfg) e.cfg = { alert: 'normal' }; // bản lưu cũ: đèn chưa có cấu hình alert
       this.ents.set(e.id, e);
       if (e._cls === 'struct') this.structs.add(e);

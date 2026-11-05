@@ -168,6 +168,22 @@ export const BACKUP = {
 //   restore: giây DB reboot khi khôi phục; rebuild: giây tới khi cả đội tự dựng lại dữ liệu từ đầu nếu không có snapshot nào để khôi phục.
 export const DATALOSS = { fail: 0.4, loss: 0.05, restore: 12, rebuild: 60 };
 
+// ---------- Chiến lược deploy (cấu hình app.cfg.deploy) ----------
+// reboot: giây App down khi deploy (App container hoá khởi động nhanh gấp đôi); share: phần request của node chạy bản mới trong cửa sổ quan sát (1 = tất cả);
+// window: giây quan sát trước khi bản mới tự lên 100% (0 = không có cửa sổ, bản mới nhận 100% ngay); rollback: giây down khi rollback TRONG cửa sổ
+// (sau cửa sổ, bản cũ đã bị gỡ nên rollback là một lần reboot như direct); watts: điện thêm (bội số watt của App) và cx: độ phức tạp thêm
+// trong lúc hai phiên bản cùng chạy; cost: nguyên liệu mỗi lần deploy.
+// `orch` là chế độ Kubernetes rolling update: tự động thay mọi chiến lược khi App đã container hoá và nằm sau k8s, không chọn được trong cấu hình.
+export const DEPLOY = {
+  direct: { name: 'Deploy thẳng', reboot: 5, share: 1, window: 0, rollback: 4, watts: 0, cx: 0, cost: {} },
+  canary: { name: 'Canary', reboot: 0, share: 0.1, window: 24, rollback: 0, watts: 0.25, cx: 0.5, cost: { scrap: 1 } },
+  bluegreen: { name: 'Blue/green', reboot: 0, share: 1, window: 18, rollback: 0, watts: 1, cx: 1.5, cost: { scrap: 2, copper: 1 } },
+  k8s: { name: 'Rolling update (Kubernetes)', orch: true, reboot: 1, share: 1, window: 0, rollback: 4, watts: 0, cx: 0, cost: {} },
+};
+export const DEPLOY_CHOICES = Object.keys(DEPLOY).filter((k) => !DEPLOY[k].orch);
+// Bản deploy lỗi làm hỏng bấy nhiêu phần request mà nó phục vụ (flow.js nhân với phần traffic đang chạy bản lỗi).
+export const BAD_FAIL = 0.4;
+
 // ---------- Công thức chế tạo ----------
 // station: 0 (tự do) | 1 whiteboard | 2 archlab | 3 chaoslab
 // out: {item,n} -> vào túi ; place: kind -> vào chế độ đặt công trình
@@ -248,7 +264,8 @@ export const PLAYER = {
 //  item:    item, n
 //  structures (STRUCTS keys): tx, ty, w, h, hp, mhp, on(bool có điện/hoạt động), crashed, tier, rb(đang reboot)
 //    generator: fuel, mf (nhiên liệu tối đa)
-//    app: bad (bản deploy lỗi), virt (số instance ảo từ autoscaler), ver, cont (bool: đã lắp Module Docker)
+//    app: bad (bản deploy lỗi), virt (số instance ảo từ autoscaler), ver, cont (bool: đã lắp Module Docker),
+//         rollout (null | { phase: 'canary'|'bluegreen', until, share }: cửa sổ quan sát của lần deploy gần nhất, xem DEPLOY)
 //    lb: algo('rr'|'lc'|'hash'), asg(bool)
 //    db: shards, leader(bool = đang là leader), disk(0..1)
 //    gateway: waf(bool)

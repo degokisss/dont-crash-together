@@ -1,6 +1,6 @@
 // Incident Director: lên lịch sự cố, áp hiệu ứng lên mô phỏng, đo tác động và sinh post-mortem
 // dựa trên kiến trúc THẬT của người chơi tại thời điểm sự cố.
-import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H, KP_PERFECT_BONUS, BACKUP } from './data.js';
+import { COMP, STRUCTS, SLO, TILE, MAP_W, MAP_H, KP_PERFECT_BONUS, BACKUP, DEPLOY } from './data.js';
 import { clamp, dist, weightedPick, round1 } from './util.js';
 import { spawnMob } from './mobs.js';
 import { BASE_TX, BASE_TY } from './worldgen.js';
@@ -318,14 +318,32 @@ export const INCIDENTS = {
     name: 'Deploy lỗi', minDay: 99,
     weight: () => 0,
     can: () => false,
-    start(w, inc) { return !!inc.target; },
+    // strategy / window: chiến lược thực sự được dùng lúc deploy; maxShare: phần traffic của node từng chạm bản lỗi (blast radius);
+    // caught: bị rollback ngay trong cửa sổ quan sát; promoted: 'auto' | 'manual' nếu bản lỗi đã lên 100%.
+    start(w, inc) {
+      const t = w.ents.get(inc.target);
+      if (!t) return false;
+      inc.strategy = w.deployMode(t);
+      inc.window = DEPLOY[inc.strategy].window;
+      inc.maxShare = w.flow.badFrac(t);
+      return true;
+    },
+    tick(w, inc) { const t = w.ents.get(inc.target); if (t) inc.maxShare = Math.max(inc.maxShare, w.flow.badFrac(t)); },
     done(w, inc) { const t = w.ents.get(inc.target); return !t || !t.bad; },
     end(w, inc) { inc.fixedAt = w.time; },
     visible: () => false,
     diag(w, inc, f, A) {
       const t = (inc.fixedAt ?? w.time) - inc.t0;
+      const D = DEPLOY[inc.strategy];
+      const reach = pct(inc.maxShare);
+      let how;
+      if (inc.strategy === 'k8s') how = { ok: true, t: 'Chiến lược deploy: rolling update (Kubernetes)', d: 'App container hoá nằm sau Kubernetes nên mọi chiến lược đã chọn bị thay bằng rolling update: pod mới lên trước khi pod cũ tắt.' };
+      else if (inc.strategy === 'direct') how = { ok: false, t: 'Chiến lược deploy (canary / blue-green)', d: `Bạn deploy thẳng: bản lỗi chạm ${reach} request của node ngay khi lên. Canary (${DEPLOY.canary.share * 100}% traffic trong ${DEPLOY.canary.window}s) giới hạn blast radius; blue/green rollback tức thì không cần reboot. Đổi chiến lược ở Cấu hình của App.` };
+      else if (inc.caught) how = { ok: true, t: `Chiến lược deploy (${D.name})`, d: inc.strategy === 'canary' ? `Bạn dùng canary và phát hiện bản lỗi trong cửa sổ canary (${D.window}s): blast radius chỉ ${reach} request của node.` : `Bạn dùng blue/green và rollback trong cửa sổ ${D.window}s: bản lỗi nhận ${reach} traffic nhưng chuyển về bản cũ ngay, không reboot.` };
+      else how = { ok: false, t: `Chiến lược deploy (${D.name})`, d: `Bạn dùng ${D.name} nhưng không rollback trong cửa sổ ${D.window}s nên bản lỗi ${inc.promoted === 'manual' ? 'được promote thủ công' : 'tự lên 100%'} (blast radius ${reach})${inc.strategy === 'bluegreen' ? ' và môi trường cũ bị gỡ, rollback lại tốn một lần reboot' : ''}. ${inc.wasMonitored ? 'Cần có người theo dõi số liệu của bản mới và bấm Rollback kịp.' : 'Node không được giám sát nên không ai thấy lỗi của bản mới.'}` };
       return [
-        { ok: f.appsUp >= 2 && f.balancers > 0, t: 'Canary / rolling', d: f.appsUp >= 2 && f.balancers > 0 ? 'Bạn deploy từng node nên chỉ một phần traffic dính lỗi (blast radius nhỏ).' : 'Chỉ có một App: deploy lỗi = 100% traffic dính lỗi. Có ≥2 App sau LB cho phép canary.' },
+        { ok: f.appsUp >= 2 && f.balancers > 0, t: 'Deploy từng node (rolling)', d: f.appsUp >= 2 && f.balancers > 0 ? 'Có ≥2 App sau LB/Kubernetes: deploy từng node thì các node còn lại vẫn nhận traffic.' : 'Chỉ có một App: deploy lỗi = 100% traffic dính lỗi. Có ≥2 App sau LB cho phép deploy từng node.' },
+        how,
         { ok: f.containers > 0, t: 'Image bất biến (container)', d: f.containers > 0 ? 'Container đóng gói cả môi trường chạy, giảm hẳn lỗi "chạy được trên máy tôi" (rủi ro deploy lỗi 30% → 12%).' : 'App chạy trực tiếp trên host: môi trường lệch giữa các lần deploy. Đóng gói bằng Module Docker.' },
         { ok: f.k8sManaged > 0, t: 'Readiness probe + rollback tự động', d: f.k8sManaged > 0 ? 'Kubernetes thấy readiness thất bại và tự rollback sau ~10s; deploy là rolling update.' : 'Không có orchestrator: phải có người thấy lỗi và bấm Rollback.' },
         { ok: inc.wasMonitored, t: 'Giám sát sau deploy', d: inc.wasMonitored ? 'Bạn thấy error rate của node tăng.' : 'Không giám sát node này: lỗi chỉ lộ qua khiếu nại khách hàng.' },
@@ -573,6 +591,7 @@ export class Director {
       const app = [...w.structs].find((s) => s.k === 'app' && s.on);
       if (!app) return w.say('Cần một App đang chạy.', 'warn', p.pid);
       app.bad = true;
+      w.openRollout(app);
       return void this.create('baddeploy', { target: app.id, kind: 'app' }, true);
     }
     if (!def.can(w, f)) return w.say('Kiến trúc hiện tại chưa đủ điều kiện cho sự cố này (vd: cần Cache cho stampede).', 'warn', p.pid);
@@ -594,10 +613,17 @@ export class Director {
   onBadDeploy(e) {
     const w = this.w;
     this.create('baddeploy', { target: e.id, kind: 'app' });
-    w.say(`Deploy v${e.ver} lên ${STRUCTS[e.k].name} hoàn tất.`, 'good');
+    w.say(`Deploy v${e.ver} lên ${STRUCTS[e.k].name} hoàn tất${w.rolloutNote(e)}.`, 'good');
   }
-  onRollback(e) {
-    // incident tự kết thúc ở step (done kiểm tra !bad)
+  // rollout = cửa sổ quan sát đang chạy lúc rollback (undefined nếu đã hết cửa sổ hoặc deploy thẳng); incident tự kết thúc ở step (done kiểm tra !bad)
+  onRollback(e, rollout) {
+    const inc = this.active.find((i) => i.id === 'baddeploy' && i.target === e.id);
+    if (inc && rollout) inc.caught = true;
+  }
+  // Bản mới lên 100% (hết cửa sổ hoặc promote thủ công) khi bản lỗi còn đó: blast radius của sự cố trở thành toàn bộ node.
+  onPromote(e, rollout, how) {
+    const inc = this.active.find((i) => i.id === 'baddeploy' && i.target === e.id);
+    if (inc) inc.promoted = how;
   }
   onFailover(db, nl, lost) {
     const w = this.w;
