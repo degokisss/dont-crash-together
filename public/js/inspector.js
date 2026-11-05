@@ -1,7 +1,7 @@
 // Bảng điều khiển công trình: metrics (chỉ khi được giám sát), cấu hình, cáp, hành động.
 import { G, $, $$, esc, cmd, enterLink, cancelMode, hooks } from './state.js';
 import { iconURL } from './art.js';
-import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES, BACKUP, DATALOSS, ALERT, ONCALL } from '/shared/data.js';
+import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES, BACKUP, DATALOSS, ALERT, ONCALL, DEPLOY, DEPLOY_CHOICES } from '/shared/data.js';
 import { entryTitle } from './codexui.js';
 
 let root, metricsEl, lastSig = '', lastTk = -1, t = 0;
@@ -18,6 +18,22 @@ function alertHelp() {
   return `Đèn page người on-call khi một component trong vùng của nó vi phạm ngưỡng liên tục. Nhạy báo sớm nhưng hay báo động giả (mất tỉnh táo, mọi người quen phớt lờ); Chặt yên tĩnh nhưng báo muộn, khi người dùng đã lỗi. Ngoài vùng đèn thì không có alert nào cả. Ack trong ${ONCALL.ack} s (phím V) hoặc cả đội bị page.<br>${rows.join('<br>')}`;
 }
 
+// Mô tả từng chiến lược theo đúng số trong DEPLOY, kèm thứ tự ưu tiên với Kubernetes.
+function deployHelp() {
+  const items = (c) => Object.entries(c).map(([k, n]) => `${n} ${ITEMS[k].name}`).join(' + ') || 'miễn phí';
+  const rows = DEPLOY_CHOICES.map((k) => {
+    const d = DEPLOY[k];
+    const win = d.window ? `bản mới nhận ${d.share * 100}% request trong ${d.window} s rồi tự lên 100% (nút Promote lên sớm)` : `bản mới nhận 100% request ngay`;
+    return `<b>${d.name}</b>: ${d.reboot ? `down ${d.reboot} s` : 'không downtime'}, ${win}, rollback ${d.rollback ? `reboot ${d.rollback} s` : 'tức thì (không reboot)'}${d.window ? ' khi còn trong cửa sổ' : ''}, ${items(d.cost)}${d.watts ? `, +${d.watts * 100}% điện và +${d.cx} độ phức tạp trong cửa sổ` : ''}`;
+  });
+  return `Cách phát hành bản mới. Canary giới hạn blast radius nhưng chỉ có tác dụng khi bạn nhìn số liệu và Rollback kịp (không ai làm gì thì hết cửa sổ bản lỗi vẫn lên 100%); blue/green rollback tức thì nhưng bản mới nhận toàn bộ traffic.<br>${rows.join('<br>')}<br><b>Ưu tiên</b>: App đã container hoá (Module Docker) và nằm sau Kubernetes luôn dùng <b>rolling update của Kubernetes</b> (down ~1 s, tự rollback ~10 s), cấu hình này bị bỏ qua; chiến lược chỉ áp dụng cho App không do Kubernetes quản lý.`;
+}
+
+// App container hoá và nằm sau một Kubernetes còn chạy: đúng điều kiện World.orchestrator.
+function k8sManaged(e) {
+  return e.k === 'app' && !!e.cont && [...G.ents.values()].some((s) => s.k === 'k8s' && s.on && !s.crashed && !s.rb && s.links.includes(e.id));
+}
+
 const CFG = {
   gateway: [
     { k: 'rl', label: 'Rate limit', codex: 'concept-load-shedding', opts: [[0, 'Tắt'], [60, '60'], [120, '120'], [250, '250'], [500, '500'], [1000, '1000']], unit: 'req/s',
@@ -32,6 +48,8 @@ const CFG = {
       help: 'Thử lại cứu lỗi thoáng qua nhưng nhân tải lên downstream đang yếu (retry storm).' },
     { k: 'backoff', label: 'Backoff + jitter', bool: true, codex: 'concept-retry-storm', help: 'Giãn và rải các lần thử lại để không dồn cục. Giảm khuếch đại tải.' },
     { k: 'breaker', label: 'Circuit breaker', bool: true, codex: 'concept-circuit-breaker', help: 'Mở khi >50% lỗi: fail fast, để downstream hồi phục. Đổi lại: có lúc từ chối dù downstream đã khỏe.' },
+    { k: 'deploy', label: 'Chiến lược deploy', codex: 'concept-deploy-strategies', opts: DEPLOY_CHOICES.map((k) => [k, DEPLOY[k].name]), help: deployHelp(),
+      note: (e) => (k8sManaged(e) ? '<p class="help"><b>Đang do Kubernetes quản lý:</b> rolling update của Kubernetes thay chiến lược này.</p>' : '') },
   ],
   cache: [
     { k: 'ttl', label: 'TTL', codex: 'concept-cache-ttl', opts: [[10, '10 s'], [30, '30 s'], [60, '60 s']], help: 'TTL dài → hit ratio cao nhưng dữ liệu cũ hơn. TTL ngắn → tươi hơn, tải lên DB cao hơn.' },
@@ -57,9 +75,9 @@ const SEMANTIC = {
   gateway: 'Gateway gửi tới <b>một</b> đích còn sống đầu tiên trong danh sách (failover theo thứ tự). Request tĩnh đi qua CDN, hoặc thẳng tới Object Storage nếu không có CDN.',
   cdn: 'CDN miss sẽ về <b>origin</b> (đích còn sống đầu tiên: S3, Kubernetes, LB hoặc App).',
   lb: 'LB chia tải cho mọi App còn sống theo thuật toán. Phát hiện node chết sau ~4 s.',
-  k8s: 'Chia tải theo công suất còn trống, phát hiện pod chết sau ~1 s. Với App <b>đã đóng container</b> (Module Docker): tự khởi động lại pod chết (~6 s), HPA khi tải &gt;70%, và tự rollback khi deploy lỗi (~10 s). App chưa đóng container chỉ được chia tải.',
+  k8s: 'Chia tải theo công suất còn trống, phát hiện pod chết sau ~1 s. Với App <b>đã đóng container</b> (Module Docker): tự khởi động lại pod chết (~6 s), HPA khi tải &gt;70%, và tự rollback khi deploy lỗi (~10 s); deploy là rolling update và <b>thay</b> chiến lược deploy (canary / blue-green) chọn ở App. App chưa đóng container chỉ được chia tải và vẫn dùng chiến lược của riêng nó.',
   s3: 'Phục vụ request <b>tĩnh</b> rất rẻ cho compute (chậm hơn CDN). DB nối tới S3 sẽ có <b>backup</b> mỗi 30 s và đĩa đầy chậm hơn.',
-  app: 'Đọc → Cache (nếu có) rồi DB; ghi → Queue (nếu có) hoặc DB. Dùng đích đầu tiên còn sống.',
+  app: 'Đọc → Cache (nếu có) rồi DB; ghi → Queue (nếu có) hoặc DB. Dùng đích đầu tiên còn sống. Chiến lược deploy (thẳng / canary / blue-green) chọn ở Cấu hình; App container hoá sau Kubernetes dùng rolling update của Kubernetes thay cho nó.',
   cache: 'Cache miss đi xuống DB.',
   queue: 'Queue xả dần vào DB theo công suất DB còn trống.',
   db: 'Replica nhận một phần đọc của DB. Nối DB → S3 để có backup định kỳ (replica không thay được backup).',
@@ -119,7 +137,7 @@ export const Inspector = {
         h += `<div class="cfg"><div class="cl"><span>${c.label}${c.unit ? ` <small>(${c.unit})</small>` : ''}</span>${c.codex && G.codex.has(c.codex) ? `<button class="q" data-codex="${c.codex}" title="Xem trong Sổ tay">?</button>` : ''}</div>`;
         if (c.bool) h += `<button class="tog ${val ? 'on' : ''}" data-cfg="${c.k}" data-v="${!val}"><i></i><span>${val ? 'Bật' : 'Tắt'}</span></button>`;
         else h += `<div class="segs">${c.opts.map(([v, l]) => `<button class="seg ${val === v ? 'on' : ''}" data-cfg="${c.k}" data-v='${JSON.stringify(v)}'>${l}</button>`).join('')}</div>`;
-        h += `<p class="help">${c.help}</p></div>`;
+        h += `<p class="help">${c.help}</p>${c.note ? c.note(e) : ''}</div>`;
       }
       h += '</section>';
     }
@@ -151,13 +169,23 @@ function signature(e) {
   const me = G.me();
   const near = me ? Math.hypot(me.x - e.x, me.y - e.y) <= HANDS_ON_R + (e.w || 1) * TILE / 2 : false;
   const inv = me ? ['wood', 'coal', 'scrap', 'copper', 'silicon', 'fiber', 'waf_module', 'asg_module', 'docker_module', 'bean', 'mushroom'].map((k) => me.inv.reduce((a, s) => a + (s && s.i === k ? s.n : 0), 0)).join(',') : '';
-  return JSON.stringify([e.id, e.tier, e.cfg, e.links, e.crashed, e.rb, e.on, e.waf, e.asg, e.cont, e.shards, e.ver, e.cooking, e.done, e.inv, near, inv, G.codex.size, Math.round(e.fuel / 10)]);
+  return JSON.stringify([e.id, e.tier, e.cfg, e.links, e.crashed, e.rb, e.on, e.waf, e.asg, e.cont, e.shards, e.ver, e.cooking, e.done, e.inv, near, inv, G.codex.size, Math.round(e.fuel / 10), e.rollout, k8sManaged(e)]);
 }
 
 function bar(v, cls = '') {
   const p = Math.max(0, Math.min(100, v * 100));
   const c = cls || (v > 1 ? 'bad' : v > 0.8 ? 'warn' : 'good');
   return `<div class="mbar ${c}"><i style="width:${p}%"></i></div>`;
+}
+
+// Trạng thái cửa sổ canary / blue-green của App. Số lỗi của bản mới chỉ có khi node được giám sát (m).
+function rolloutHTML(e, m) {
+  if (!e.rollout) return '';
+  const ro = e.rollout, D = DEPLOY[ro.phase];
+  const row = (l, v, cls = '') => `<div class="mrow"><span>${l}</span><b class="${cls}">${v}</b></div>`;
+  let h = row(`${D.name}: ${Math.round(ro.share * 100)}% request chạy bản mới`, `còn ${Math.max(0, Math.ceil(ro.until - G.time))} s`, 'warn');
+  if (m && m.ro) h += row(ro.phase === 'canary' ? 'Canary lỗi' : 'Bản mới (green) lỗi', Math.round(m.ro.err * 100) + '%', m.ro.err > 0 ? 'bad' : 'good');
+  return h;
 }
 
 function metricsHTML(e) {
@@ -170,14 +198,14 @@ function metricsHTML(e) {
   }
   if (!COMP[e.k]) return '';
   const m = G.sys && G.sys.n[e.id];
-  if (!m) return `<div class="blind">${img('lantern', 20)} Ngoài vùng giám sát — bạn không thấy metrics của component này (và Gremlin sẽ gặm nó ban đêm). Đặt <b>Đèn giám sát</b> gần đây và đảm bảo có điện.</div>`;
+  if (!m) return `<div class="blind">${img('lantern', 20)} Ngoài vùng giám sát — bạn không thấy metrics của component này (và Gremlin sẽ gặm nó ban đêm). Đặt <b>Đèn giám sát</b> gần đây và đảm bảo có điện.</div>${e.k === 'app' ? rolloutHTML(e, null) : ''}`;
   let h = `<div class="mrow"><span>Utilization</span><b class="${m.u > 1 ? 'bad' : m.u > 0.8 ? 'warn' : ''}">${Math.round(m.u * 100)}%</b></div>${bar(m.u)}
     <div class="mrow"><span>Request vào</span><b>${m.rps}/s</b></div>
     <div class="mrow"><span>Độ trễ node</span><b>${m.lat} ms</b></div>
     <div class="mrow"><span>Tỉ lệ lỗi (node)</span><b class="${m.err > 0.02 ? 'bad' : ''}">${(m.err * 100).toFixed(1)}%</b></div>`;
   const r = (l, v, cls = '') => `<div class="mrow"><span>${l}</span><b class="${cls}">${v}</b></div>`;
   switch (e.k) {
-    case 'app': h += r('Bộ nhớ', m.mem + '%', m.mem > 70 ? 'warn' : '') + bar(m.mem / 100, m.mem > 85 ? 'bad' : m.mem > 60 ? 'warn' : 'good') + r('Hệ số khuếch đại retry', '×' + m.amp, m.amp > 1.3 ? 'warn' : '') + r('Breaker', { closed: 'đóng', open: 'MỞ', half: 'nửa mở' }[m.br] || '—', m.br === 'open' ? 'bad' : '') + (e.virt ? r('Instance ảo (autoscale)', '+' + e.virt) : '') + r('Container', e.cont ? 'có' : 'không'); break;
+    case 'app': h += r('Bộ nhớ', m.mem + '%', m.mem > 70 ? 'warn' : '') + bar(m.mem / 100, m.mem > 85 ? 'bad' : m.mem > 60 ? 'warn' : 'good') + r('Hệ số khuếch đại retry', '×' + m.amp, m.amp > 1.3 ? 'warn' : '') + r('Breaker', { closed: 'đóng', open: 'MỞ', half: 'nửa mở' }[m.br] || '—', m.br === 'open' ? 'bad' : '') + (e.virt ? r('Instance ảo (autoscale)', '+' + e.virt) : '') + r('Container', e.cont ? 'có' : 'không') + rolloutHTML(e, m); break;
     case 'cache': h += r('Hit ratio', Math.round(m.hit * 100) + '%') + r('Độ ấm (warm-up)', Math.round(m.warm * 100) + '%') + (m.crush ? '<div class="alert">STAMPEDE: key hết hạn cùng lúc!</div>' : ''); break;
     case 'cdn': h += r('Hit ratio', Math.round(m.hit * 100) + '%'); break;
     case 'queue': h += r('Backlog', m.q + ' msg') + bar(m.full, m.full > 0.8 ? 'bad' : m.full > 0.4 ? 'warn' : 'good') + r('Lag', m.lag + ' s', m.lag > 10 ? 'warn' : ''); break;
@@ -234,7 +262,13 @@ function actions(e, near) {
   h += e.crashed ? b('reboot', 'Sửa & reboot', ' <small>(1 linh kiện)</small>', 'primary') : b('restart', 'Restart');
   const C = COMP[e.k];
   if (C.upgrade && C.upgrade[e.tier]) h += `<div class="upg"><button class="btn small" data-act="upgrade" ${dis}>Nâng tier ${e.tier + 1} <small>(reboot ~10s)</small></button><div class="ings">${costChips(C.upgrade[e.tier], me)}</div></div>`;
-  if (e.k === 'app') h += b('deploy', 'Deploy v' + (e.ver + 1)) + (e.ver > 1 ? b('rollback', 'Rollback') : '');
+  if (e.k === 'app') {
+    const D = DEPLOY[k8sManaged(e) ? 'k8s' : e.cfg.deploy] || DEPLOY.direct;
+    const dep = `<button class="btn small" data-act="deploy" ${dis}>Deploy v${e.ver + 1} <small>(${D.name})</small></button>`;
+    h += Object.keys(D.cost).length ? `<div class="upg">${dep}<div class="ings">${costChips(D.cost, me)}</div></div>` : dep;
+    if (e.rollout) h += b('promote', 'Promote lên 100%');
+    if (e.ver > 1) h += b('rollback', 'Rollback', e.rollout && !DEPLOY[e.rollout.phase].rollback ? ' <small>(không reboot)</small>' : '');
+  }
   if (e.k === 'db') {
     if (e.shards < 4) h += `<div class="upg"><button class="btn small" data-act="shard" ${dis}>Thêm shard (${e.shards}→${e.shards + 1})</button><div class="ings">${costChips(C.shardCost, me)}</div></div>`;
     h += b('archive', 'Archive dữ liệu cũ', ' <small>(2 linh kiện)</small>');

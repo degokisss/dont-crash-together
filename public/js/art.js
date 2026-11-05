@@ -1278,6 +1278,7 @@ export function zOf(e) {
 export function drawEntity(ctx, e, o) {
   o = o || {};
   const x = e.rx ?? e.x, y = e.ry ?? e.y, k = e.k;
+  if (k === 'app' && e.bad && !o.info) e = { ...e, bad: false }; // bản lỗi (kể cả canary) chỉ lộ ra khi App nằm trong vùng giám sát
   S.t = o.t || 0;
   S.gk = 0.75 + 0.6 * (o.dark || 0);
   sd = seedOf(e.id === undefined ? 1 : e.id);
