@@ -107,14 +107,14 @@ run('hourly backup: each completed snapshot resets the unprotected writes and co
   const on = dbWorld({ backup: 'hourly' }), off = dbWorld();
   on.run(29); off.run(29);
   const before = on.m();
-  assert.equal(typeof before.bk, 'number', 'a snapshot completed after enabling backup');
+  assert.equal(typeof before.snapAge, 'number', 'a snapshot completed after enabling backup');
   assert.ok(before.rpo > 3, 'writes since that snapshot are at risk');
   on.run(7); off.run(7);
   const after = on.m();
-  assert.ok(after.bk < before.bk, 'a newer snapshot completed');
+  assert.ok(after.snapAge < before.snapAge, 'a newer snapshot completed');
   assert.ok(after.rpo < before.rpo, 'at-risk writes reset by the new snapshot');
   assert.ok(off.m().rpo > 3 * Math.max(1, after.rpo), 'without backup every write stays at risk');
-  assert.equal(off.m().bk, null);
+  assert.equal(off.m().snapAge, null);
   assert.ok(after.disk > off.m().disk, 'snapshots take disk');
 });
 
@@ -170,12 +170,12 @@ run('restore is refused when backup is off, and when no snapshot exists yet', ()
 run('turning backup off discards the snapshots; an unknown mode is rejected', () => {
   const t = dbWorld({ backup: 'hourly' });
   t.run(10);
-  assert.equal(typeof t.m().bk, 'number');
+  assert.equal(typeof t.m().snapAge, 'number');
   t.w.c_config(t.p, { id: t.db.id, key: 'backup', val: 'weekly' });
   assert.equal(t.db.cfg.backup, 'hourly');
   t.w.c_config(t.p, { id: t.db.id, key: 'backup', val: 'off' });
   t.run(1);
-  assert.equal(t.m().bk, null);
+  assert.equal(t.m().snapAge, null);
 });
 
 run('corrupt data is replicated: failing over to a replica does not heal it', () => {
@@ -234,7 +234,7 @@ run('save/load keeps backup config, snapshot age and corruption', () => {
   for (let i = 0; i < 1 / DT; i++) w.step(DT);
   const m = w.flow.view.n[db.id];
   assert.equal(m.corrupt, 1, 'still corrupt after reload');
-  assert.ok(m.bk >= before.bk && m.bk <= before.bk + 6, `snapshot age ${m.bk} vs ${before.bk}`);
+  assert.ok(m.snapAge >= before.snapAge && m.snapAge <= before.snapAge + 6, `snapshot age ${m.snapAge} vs ${before.snapAge}`);
   p.x = db.x; p.y = db.y;
   w.c_restore(p, { id: db.id });
   for (let i = 0; i < 1 / DT; i++) w.step(DT);
@@ -250,5 +250,5 @@ run('a save from before backups existed loads with backup off', () => {
   for (let i = 0; i < 5 / DT; i++) w.step(DT);
   const db = [...w.structs].find((s) => s.k === 'db');
   assert.equal(db.cfg.backup, 'off');
-  assert.equal(w.flow.view.n[db.id].bk, null);
+  assert.equal(w.flow.view.n[db.id].snapAge, null);
 });

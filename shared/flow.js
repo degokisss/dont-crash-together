@@ -665,7 +665,7 @@ export class Flow {
         case 'queue': m.q = Math.round(st.q); m.lag = round(st.lag, 1); m.full = round(st.fullness || 0, 2); break;
         case 'db':
           m.disk = round(st.disk, 3); m.lag = round(st.lag, 1); m.why = st.why || ''; m.split = st.split ? 1 : 0; m.writable = st.writable ? 1 : 0;
-          m.bk = st.lastBackupAt === null ? null : Math.round(w.time - st.lastBackupAt); m.rpo = this.atRisk(n); m.snap = st.snapUntil ? 1 : 0; m.corrupt = st.corrupt ? 1 : 0;
+          m.snapAge = st.lastBackupAt === null ? null : Math.round(w.time - st.lastBackupAt); m.rpo = this.atRisk(n); m.snap = st.snapUntil ? 1 : 0; m.corrupt = st.corrupt ? 1 : 0;
           break;
         case 'replica': m.lag = round(st.lag || 0, 1); break;
         case 'lb': m.asg = st.asgU !== undefined ? round(st.asgU, 2) : undefined; m.shares = st.shares; break;
