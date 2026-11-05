@@ -146,6 +146,19 @@ export function canLink(fromKind, toKind) {
 
 export const SLO = { success: 0.985, p99: 1500 };
 
+// ---------- Backup & khôi phục (cấu hình db.cfg.backup) ----------
+// every: giây giữa hai lần snapshot hoàn tất (0 = tắt; một ngày game dài DAY_LEN giây, nên "hằng giờ" = 1/5 ngày game).
+// run: snapshot chạy bao lâu; io: tải IO cộng thêm lúc đang chạy; disk: phần đĩa (0..1, DB tier 1) mỗi snapshot chiếm.
+export const BACKUP = {
+  off: { name: 'Tắt', every: 0, run: 0, io: 0, disk: 0 },
+  daily: { name: 'Hằng ngày', every: DAY_LEN, run: 8, io: 90, disk: 0.008 },
+  hourly: { name: 'Hằng giờ', every: 30, run: 4, io: 60, disk: 0.005 },
+};
+// Dữ liệu hỏng (sự cố dataloss) và mất dữ liệu:
+//   fail: tỉ lệ đọc/ghi thất bại (trên DB lẫn replica) cho tới khi khôi phục; loss: số bản ghi mất trên mỗi ghi chưa được bảo vệ bởi snapshot;
+//   restore: giây DB reboot khi khôi phục; rebuild: giây tới khi cả đội tự dựng lại dữ liệu từ đầu nếu không có snapshot nào để khôi phục.
+export const DATALOSS = { fail: 0.4, loss: 0.05, restore: 12, rebuild: 60 };
+
 // ---------- Công thức chế tạo ----------
 // station: 0 (tự do) | 1 whiteboard | 2 archlab | 3 chaoslab
 // out: {item,n} -> vào túi ; place: kind -> vào chế độ đặt công trình
@@ -246,8 +259,8 @@ export const ROLES = {
     desc: 'Deploy cẩn thận: bản lỗi chỉ 12% thay vì 30%, rollback gần như tức thì, nâng tier rẻ hơn 25%.',
     perks: ['Deploy lỗi 12% (thường 30%)', 'Rollback tức thì', 'Nâng tier rẻ hơn 25%'] },
   dba: { name: 'DBA', tag: 'Người giữ dữ liệu', color: 120,
-    desc: 'Archive miễn phí và dọn được 50% đĩa; thêm shard chỉ nửa giá.',
-    perks: ['Archive miễn phí, dọn 50% đĩa', 'Thêm shard nửa giá'] },
+    desc: 'Archive miễn phí và dọn được 50% đĩa; thêm shard chỉ nửa giá; khôi phục backup nhanh gấp đôi.',
+    perks: ['Archive miễn phí, dọn 50% đĩa', 'Thêm shard nửa giá', 'Khôi phục backup nhanh gấp đôi'] },
   netops: { name: 'Network Eng.', tag: 'Người kéo cáp', color: 300,
     desc: 'Nối cáp tốn nửa số cáp, chạy nhanh hơn 12%, tầm xây xa hơn.',
     perks: ['Nối cáp tốn một nửa', 'Tốc độ +12%', 'Tầm xây +40%'] },
