@@ -29,7 +29,7 @@ export class Room {
     if (this.clients.size >= MAX_PLAYERS) { client.send(JSON.stringify({ t: 'full' })); return null; }
     const pid = this.nextPid++;
     name = String(name || 'Kỹ sư').slice(0, 16);
-    token = String(token || Math.random().toString(36).slice(2));
+    token = String(token || Math.random().toString(36).slice(2)).slice(0, 64);
     const used = new Set([...this.clients.values()].map((c) => c.hue));
     const hue = HUES.find((h) => !used.has(h)) ?? HUES[pid % HUES.length];
     const info = { pid, name, token, hue, role };

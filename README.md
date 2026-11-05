@@ -63,6 +63,7 @@ Kiến trúc mạng (cũng là một bài học): client chỉ gửi **input/l�
 
 ```bash
 node tools/sim-test.js 600 idle      # chạy 600 giây thế giới, in chỉ số mỗi 30s
+npm test                             # hồi quy: token/lệnh độc hại không làm sập tick, save/load giữ bản đồ
 node tools/incident-test.js          # dựng kiến trúc đầy đủ, kích hoạt từng sự cố + post-mortem
 node tools/db-test.js                # failover / split-brain / quorum / sync
 DCT_DEBUG=1 npm start                # bật lệnh debug (give/kit/build/inc...) để thử nhanh

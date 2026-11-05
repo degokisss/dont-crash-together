@@ -8,7 +8,9 @@ const client = { send: (s) => postMessage(s) };
 self.onmessage = (ev) => {
   const d = ev.data;
   if (d.type === 'init') {
-    room = new Room({ name: 'solo', save: d.save || null, onSave: (r, json) => postMessage({ type: 'save', data: json }) });
+    const onSave = (r, json) => postMessage({ type: 'save', data: json });
+    try { room = new Room({ name: 'solo', save: d.save || null, onSave }); }
+    catch (e) { console.error('save hỏng, tạo thế giới mới', e.message); room = new Room({ name: 'solo', onSave }); }
     room.start();
     room.join(client, { name: d.name, token: d.token, role: d.role });
   } else if (d.type === 'msg') {

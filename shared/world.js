@@ -33,7 +33,7 @@ export class World {
     this.structs = new Set();
     this.items = new Set();
     this.resting = new Set(); // tài nguyên đang chờ mọc lại
-    this.stash = {}; // token -> dữ liệu người chơi offline
+    this.stash = Object.create(null); // token -> dữ liệu người chơi offline
     this.events = [];
     this.codex = new Set();
     this.kp = KP_START;
@@ -243,7 +243,7 @@ export class World {
 
   // ---------------- người chơi ----------------
   addPlayer(pid, name, token, hue, role = 'sre') {
-    if (!ROLES[role]) role = 'sre';
+    if (!Object.hasOwn(ROLES, role)) role = 'sre';
     const saved = this.stash[token];
     let p;
     const gw = [...this.structs].find((s) => s.k === 'gateway');
@@ -265,9 +265,10 @@ export class World {
     }
     p.pid = pid;
     p.name = name;
-    if (!saved || !ROLES[saved.role]) p.role = role; // nhân vật đã lưu giữ nguyên vai trò
+    if (!saved || !Object.hasOwn(ROLES, saved.role)) p.role = role; // nhân vật đã lưu giữ nguyên vai trò
     if (p.role === 'secops' && p.mhp < 130) { p.mhp = 130; p.hp = Math.min(130, p.hp + 30); }
     p._token = token;
+    if (p.ghost) p._respawnAt = this.time + PLAYER.respawn; // _respawnAt không nằm trong save
     p._in = { mx: 0, my: 0 };
     p._goal = null;
     p._cd = 0;
@@ -459,6 +460,7 @@ export class World {
   }
 
   c_unequip(p, m) {
+    if (m.slot !== 'hand' && m.slot !== 'body') return;
     const cur = p.eq[m.slot];
     if (!cur) return;
     const i = p.inv.indexOf(null);
@@ -1142,14 +1144,20 @@ export class World {
 
   load(raw) {
     const s = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (s.seed !== undefined) {
+      this.seed = s.seed >>> 0;
+      this.rng = mulberry32(this.seed ^ 0x5bd1e995);
+      this.tiles = genTiles(this.seed);
+    }
     this.time = s.time; this.tick = s.tick; this.nextId = s.nextId; this.users = s.users; this.sat = s.sat ?? 100;
     this.codex = new Set(s.codex);
     if (s.kp === undefined) { this.learned = new Set(RECIPES.filter((r) => r.kp).map((r) => r.id)); this.kp = 0; } // bản lưu cũ: giữ mọi công thức đã mở
-    else { this.kp = s.kp; this.learned = new Set(s.learned); } this.tipsSeen = new Set(s.tipsSeen); this.stash = s.stash || {};
-    this.growthBoostAt = s.growthBoostAt ?? -999; this.peakUsers = s.peak || s.users; this.dayStat = s.dayStat;
+    else { this.kp = s.kp; this.learned = new Set(s.learned); } this.tipsSeen = new Set(s.tipsSeen); this.stash = Object.assign(Object.create(null), s.stash);
+    this.growthBoostAt = s.growthBoostAt ?? -999; this.peakUsers = s.peak || s.users; this.dayStat = s.dayStat ?? this.dayStat;
     this.log = s.log || []; this.history = s.history || []; this.won = !!s.won;
     this.clock = clockAt(this.time);
     for (const e of s.ents) {
+      if (e.k === 'bot') continue; // bot DDoS thuộc về sự cố đang chạy, sự cố không được lưu
       e._cls = RESOURCES[e.k] ? 'res' : STRUCTS[e.k] ? 'struct' : MOBS[e.k] ? 'mob' : e.k;
       this.ents.set(e.id, e);
       if (e._cls === 'struct') this.structs.add(e);

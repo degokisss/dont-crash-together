@@ -507,7 +507,7 @@ export class Director {
     const w = this.w;
     const def = INCIDENTS[id];
     if (!def || !w.codex.has('inc-' + id)) return w.say('Chỉ có thể diễn tập sự cố bạn đã từng gặp.', 'warn', p.pid);
-    if (this.active.length >= 2) return w.say('Đang có quá nhiều sự cố.', 'warn', p.pid);
+    if (this.active.length >= 2 || this.active.some((a) => a.id === id)) return w.say('Đang có quá nhiều sự cố.', 'warn', p.pid);
     const f = archFacts(w);
     if (id === 'baddeploy') {
       const app = [...w.structs].find((s) => s.k === 'app' && s.on);

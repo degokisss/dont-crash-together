@@ -277,7 +277,7 @@ export class Flow {
     this.process(n, c, dt);
     const targets = this.linked(n, ['app']).filter((t) => this.believed(n, t, HC_DELAY.lb));
     // autoscaler
-    if (n.asg && targets.length) {
+    if (n.asg && c.up && targets.length) {
       const tmpl = targets[0];
       let l = 0, cp = 0;
       for (const t of targets) { const x = this.ctx.get(t.id); if (x) { l += x.load; cp += this.capOf(t); } }
@@ -424,7 +424,7 @@ export class Flow {
     if (seemsDown) {
       st.since = st.since || now;
       if (now - st.since >= FAILOVER_DELAY && cfg.failover !== 'off') {
-        const cands = !leaderUp ? reps.filter((r) => r !== leaderEnt && reach(r)) : isolated;
+        const cands = !leaderUp ? members.filter((m) => m !== leaderEnt && (m === n ? dbUp : reach(m))) : isolated;
         // phía của ứng viên có đa số không? (quorum cần > một nửa tổng số node)
         const side = !leaderUp ? members.filter((m) => m !== leaderEnt && (m === n ? dbUp : reach(m))).length : cands.length;
         const ok = cfg.failover === 'auto' || side > members.length / 2;
@@ -432,6 +432,7 @@ export class Flow {
           const nl = cands[0];
           const lag = cfg.repl === 'sync' ? 0 : st.lag;
           const lost = Math.round(wsum * lag + (st.diskLoss ? st.sinceBackup * 0.05 : 0));
+          st.diskLoss = false;
           st.leader = nl.id;
           st.since = 0;
           leaderEnt = nl;
