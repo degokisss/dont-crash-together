@@ -67,6 +67,22 @@ Replica sao chép cả lỗi lẫn lệnh xoá nhầm nên **không thay đượ
 - **Khôi phục từ backup** (lệnh `c_restore`, đứng gần DB) cần Backup bật, đã có snapshot và dữ liệu đang hỏng. DB reboot 12 s (**DBA** 6 s, **RTO**), mất các ghi sau snapshot cuối (tính vào dữ liệu mất và trừ người dùng như failover mất dữ liệu), hết hỏng và sự cố kết thúc. Không có snapshot: khôi phục bị từ chối, và sau 60 s cả đội tự dựng lại dữ liệu từ đầu, mất toàn bộ ghi chưa được bảo vệ.
 - Crash DB kèm hỏng đĩa (30% số lần crash DB) dùng cùng công thức, nên có snapshot gần đây thì mất ít hơn nhiều.
 
+### Cảnh báo & on-call
+Đèn giám sát có cấu hình **Mức cảnh báo** (`lantern.cfg.alert`, bảng `ALERT` trong `shared/data.js`, mặc định **Vừa**). Mỗi 0,5 s đèn đánh giá số liệu của từng component trong vùng của nó (đúng số liệu bạn thấy ở inspector). Component ngoài mọi vùng đèn, hoặc trong vùng đèn đang mất điện/để Tắt, **không bao giờ page**. Component nằm trong nhiều vùng dùng đèn nhạy nhất đang bật alert.
+
+| Mức | Lỗi (node) | p99 (node) | Utilization | Đĩa DB | Phải vi phạm liên tục |
+|---|---|---|---|---|---|
+| Tắt | — | — | — | — | — |
+| Nhạy | ≥ 0,5% | ≥ 300 ms | ≥ 50% | ≥ 50% | 2 s |
+| Vừa | ≥ 5% | ≥ 1200 ms | ≥ 92% | ≥ 85% | 6 s |
+| Chặt | ≥ 30% | ≥ 4500 ms | ≥ 120% | ≥ 97% | 20 s |
+
+- Mỗi cặp (quy tắc, node) là một máy trạng thái `ok → pending → firing → acked` trong một registry duy nhất (`w.alerts`). Vi phạm → `pending`; đủ thời gian `for` thì `firing` và page; hết vi phạm liên tục 10 s thì tự đóng (chống nhấp nháy). Một điều kiện chỉ page một lần (khoá `quy tắc:node`), và nhiều quy tắc cùng vi phạm trên một node chỉ page một lần (alert nặng hơn, cảnh báo → lỗi, vẫn page lại). Node đang reboot được coi là bảo trì, không page. Alert đang kêu được lưu cùng thế giới nên tải lại không page lại.
+- **On-call**: đúng một người chơi online là người on-call, đổi sang người kế tiếp mỗi ngày mới, hoặc nhận ca bằng lệnh `c_oncall` (nút "Nhận ca" ở bảng Pager). Page hiện nổi bật (toast + âm thanh) cho người on-call, và là thông báo nhỏ ("X đang bị page") cho những người khác.
+- **Ack** (`c_ack`, phím V hoặc nút Ack ở Pager) phải trong **20 s**. Quá hạn thì alert **escalate**: cả đội bị page, người on-call mất **15** tỉnh táo, và từ đó ai cũng ack được. Trước khi escalate chỉ người on-call ack được. Giao ca đưa các page chưa ack sang người mới với cửa sổ ack mới.
+- **Báo động giả**: page kêu khi không có sự cố nào đang chạy và SLO vẫn đạt. Mỗi page giả làm người on-call mất **4** tỉnh táo. Nhạy kêu sớm nhưng hay báo giả; Chặt không báo giả nhưng chỉ kêu khi người dùng đã lỗi (ví dụ crash App duy nhất: Nhạy ~3 s, Vừa ~7 s, Chặt ~21 s sau khi crash, SLO vỡ ngay từ giây 0). `node tools/alert-sim.js` in bảng so sánh các mức trên cùng kịch bản có seed.
+- Số liệu của sự cố: `detectedAt` (alert đầu tiên kêu trong sự cố) và `ackedAt`; post-mortem có thêm các dòng *Alert phát hiện trước khi SLO vỡ*, *MTTD*, *MTTA* và *Báo động giả* (số page giả kể từ sự cố trước), kèm lý do thật khi không có alert nào (alert Tắt, node ngoài vùng đèn, ngưỡng quá chặt).
+
 ## Sinh tồn
 - Chỉ số: ❤ Máu, ☕ Năng lượng (đói), 🧠 Tỉnh táo. Đói 0 → mất máu. Tỉnh táo <30%: màn hình rung/méo, số liệu ở thẻ người dùng bị nhiễu; <22%: báo động giả xuất hiện (rồi tự nhận là sai); <15%: "cảnh báo giả" (phantom) hiện hình và tấn công.
 - Tỉnh táo giảm theo **độ phức tạp** của hệ thống (số component & tuỳ chọn) chia cho số kỹ sư online, giảm thêm trong bóng tối và khi có sự cố đang diễn ra. Giá Runbook, Vịt cao su, đồ ăn ngon giúp hồi.
@@ -99,7 +115,7 @@ Công thức nâng cao (Cache, Queue, CDN, Replica, Tháp tường lửa, Module
 Trong Sơ đồ (M) bấm Tĩnh/Đọc/Ghi để gửi một request mẫu: server lấy mẫu một đường đi theo đúng xác suất của mô phỏng hiện tại (chia tải, cache hit/miss, drop do quá tải, retry, breaker, cáp đứt, rate limit...) và hiện từng bước với thời gian cộng dồn. Kèm mẫu 60 request (tỉ lệ thành công, p50/p99, lỗi hay gặp nhất) và gợi ý sổ tay. Node ngoài vùng Đèn giám sát chỉ hiện "???".
 
 ## Post-mortem
-Khi sự cố kết thúc, game sinh báo cáo: tác động (thời gian, % lỗi tối đa, p99 tối đa, người dùng ảnh hưởng), danh sách kiểm tra *"bạn có X không?"* (✓/✗ kèm lý do thật từ trạng thái hệ thống lúc đó) và gợi ý Codex.
+Khi sự cố kết thúc, game sinh báo cáo: tác động (thời gian, % lỗi tối đa, p99 tối đa, người dùng ảnh hưởng), danh sách kiểm tra *"bạn có X không?"* (✓/✗ kèm lý do thật từ trạng thái hệ thống lúc đó) và gợi ý Codex. Mọi sự cố đều có thêm các dòng về cảnh báo (xem *Cảnh báo & on-call*).
 
 ## Chaos Lab
 Công trình cấp 3: cho phép kích hoạt thủ công một sự cố đã gặp ("game day") — sự cố không bị tính vào SLO ngày và không làm mất user. Chỗ an toàn để thử nghiệm kiến trúc.
