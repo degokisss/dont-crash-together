@@ -238,3 +238,16 @@ body.insp #goals { display: none; }
 .tr-steps li.ok { border-color: var(--green); } .tr-steps li.hit { border-color: var(--cyan); } .tr-steps li.retry { border-color: var(--amber); } .tr-steps li.drop, .tr-steps li.dead, .tr-steps li.cut { border-color: var(--red); background: #26151a; } .tr-steps li.drop i, .tr-steps li.dead i, .tr-steps li.cut i { background: var(--red); color: #fff; } .tr-steps li.hit i { background: var(--cyan); color: #06222a; } .tr-steps li.retry i { background: var(--amber); color: #2a1a00; }
 .tr-agg { color: var(--dim); margin: 3px 0; } .tr-hint { background: rgba(185,150,255,.1); border: 1px solid #5a4690; border-radius: 3px; padding: 4px 8px; line-height: 1.4; }
 .dnode.traced { box-shadow: 0 0 0 2px var(--cyan); } .dnode.tfail { box-shadow: 0 0 0 2px var(--red); } .dnode.tcur { box-shadow: 0 0 0 3px #fff, 0 0 14px var(--cyan); }
+
+/* pager (alert + on-call) */
+#pager { position: absolute; right: calc(50% + 165px); top: 10px; width: 250px; background: rgba(18,14,24,.92); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
+#pager.paging { border-color: var(--amber); animation: pulse 1.2s infinite; } #pager.esc { border-color: var(--red); animation: pulse .6s infinite; }
+#pager .ph2 { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; } #pager .ph2 b { color: var(--amber); letter-spacing: .5px; } #pager .ph2 span { flex: 1; color: var(--dim); } #pager .ph2 i { font-style: normal; font-weight: 700; }
+#pager .prow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 5px 6px; margin-top: 4px; border-left: 4px solid var(--amber); background: rgba(60,40,20,.5); border-radius: 3px; }
+#pager .prow.crit { border-color: var(--red); background: rgba(70,24,22,.6); } #pager .prow.acked { border-color: var(--green); background: rgba(30,50,30,.5); opacity: .85; } #pager .prow.esc { animation: pulse .6s infinite; }
+#pager .pn { flex: 1; display: flex; flex-direction: column; min-width: 0; } #pager .pn em { font-style: normal; font-size: 11.5px; color: var(--dim); } #pager .pn em.bad { color: var(--red); font-weight: 700; } #pager .pn em.ok { color: var(--green); }
+#pager .lnk { background: none; border: none; padding: 0; color: var(--ink); font-weight: 700; text-align: left; text-decoration: underline dotted; }
+#pager .pw { width: 100%; display: flex; flex-wrap: wrap; gap: 3px 10px; color: var(--dim); font-size: 11.5px; order: 3; } #pager .pw b { color: var(--ink); }
+#pager .pempty { color: var(--dim); font-size: 11.5px; line-height: 1.4; } #pager .pall { width: 100%; margin-top: 6px; }
+.dnode.paging { box-shadow: 0 0 0 2px var(--amber), 0 0 14px rgba(240,180,76,.7); animation: pulse 1.2s infinite; }
+.dnode.paging::after { content: 'PAGE'; position: absolute; right: 4px; bottom: 3px; background: var(--red); color: #fff; font: 700 10px var(--mono); padding: 1px 5px; border-radius: 3px; letter-spacing: .5px; }

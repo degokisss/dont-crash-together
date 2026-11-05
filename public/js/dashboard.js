@@ -158,6 +158,7 @@ function paint(comps) {
       if (c.k === 'db') txt += ` · đĩa ${Math.round(m.disk * 100)}%`;
     }
     if (G.selected === id) cls += ' sel';
+    if (sys && sys.al && sys.al.list.some((a) => a.node === id && a.st === 'firing')) cls += ' paging';
     el.className = cls;
     el.querySelector('.dn-u i').style.width = Math.min(100, u * 100) + '%';
     el.querySelector('.dn-m').innerHTML = txt;

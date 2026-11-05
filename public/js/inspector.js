@@ -1,7 +1,7 @@
 // Bảng điều khiển công trình: metrics (chỉ khi được giám sát), cấu hình, cáp, hành động.
 import { G, $, $$, esc, cmd, enterLink, cancelMode, hooks } from './state.js';
 import { iconURL } from './art.js';
-import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES, BACKUP, DATALOSS } from '/shared/data.js';
+import { ITEMS, COMP, STRUCTS, HANDS_ON_R, TILE, COOK, RECIPES, BACKUP, DATALOSS, ALERT, ONCALL } from '/shared/data.js';
 import { entryTitle } from './codexui.js';
 
 let root, metricsEl, lastSig = '', lastTk = -1, t = 0;
@@ -11,6 +11,12 @@ const INC_NAMES = {
   spike: 'Traffic spike', stampede: 'Cache stampede', crash: 'Node crash', leak: 'Rò rỉ bộ nhớ', ddos: 'DDoS / botnet', partition: 'Network partition',
   hotkey: 'Hot key', diskfull: 'Disk full', baddeploy: 'Deploy lỗi', outage: 'Mất điện lưới', analytics: 'Truy vấn báo cáo nặng', dataloss: 'Xóa nhầm dữ liệu',
 };
+
+// Mô tả từng mức theo đúng ngưỡng trong ALERT, để người chơi thấy cái giá của việc chỉnh nhạy hay chặt.
+function alertHelp() {
+  const rows = Object.entries(ALERT).filter(([, a]) => a.for).map(([, a]) => `<b>${a.name}</b>: lỗi ≥ ${a.err * 100}%, p99 ≥ ${a.p99} ms, util ≥ ${a.util * 100}%, đĩa ≥ ${a.disk * 100}%, kéo dài ≥ ${a.for} s`);
+  return `Đèn page người on-call khi một component trong vùng của nó vi phạm ngưỡng liên tục. Nhạy báo sớm nhưng hay báo động giả (mất tỉnh táo, mọi người quen phớt lờ); Chặt yên tĩnh nhưng báo muộn, khi người dùng đã lỗi. Ngoài vùng đèn thì không có alert nào cả. Ack trong ${ONCALL.ack} s (phím V) hoặc cả đội bị page.<br>${rows.join('<br>')}`;
+}
 
 const CFG = {
   gateway: [
@@ -41,6 +47,9 @@ const CFG = {
     { k: 'salt', label: 'Key salting', bool: true, codex: 'concept-sharding', help: 'Rải key nóng ra nhiều shard: giảm skew khi sharding.' },
     { k: 'backup', label: 'Backup (snapshot)', codex: 'concept-backup', opts: Object.entries(BACKUP).map(([k, b]) => [k, b.name]),
       help: `Snapshot định kỳ để quay về khi dữ liệu bị xoá hay hỏng; replica không thay được vì nó sao chép cả lỗi. Hằng giờ: mỗi ${BACKUP.hourly.every} s, hằng ngày: mỗi ${BACKUP.daily.every} s. Mỗi snapshot tốn IO và đĩa; tắt Backup sẽ xoá mọi snapshot.` },
+  ],
+  lantern: [
+    { k: 'alert', label: 'Mức cảnh báo', codex: 'concept-alerting', opts: Object.entries(ALERT).map(([k, a]) => [k, a.name]), help: alertHelp() },
   ],
 };
 
